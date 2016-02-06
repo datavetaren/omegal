@@ -12,6 +12,11 @@ ifeq ($(OS),Windows_NT)
 else
   OBJ_EXT := .o
   EXE_EXT :=
+  LINK := g++
+  CC := g++
+  CCFLAGS := -c
+  CCOUT := -o
+  LINKOUT := -o
 
   green="\033[0;32m"
   yellow="\033[0;33m"
