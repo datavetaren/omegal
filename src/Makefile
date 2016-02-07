@@ -47,11 +47,13 @@ OBJ_FILES := $(addprefix $(OUT)/, $(CPP_FILES:$(SRC)/%.cpp=%$(OBJ_EXT)))
 GOAL := $(BIN)/omegal$(EXE_EXT)
 
 $(GOAL) : $(BIN) $(OUT) $(OBJ_FILES)
+	@mkdir -p /tmp
 	@(echo $(green) $(bold) $@ $(off) $(white))
 	@$(LINK) $(LINKFLAGS) $(LINKOUT)$@ $(OBJ_FILES)
 
 $(OUT)/%$(OBJ_EXT) : $(SRC)/%.cpp
 	@(echo $(green) $(bold) $(notdir $<) $(off) $(white))
+	@mkdir -p /tmp
 	@(rm -f /tmp/err.log)
 	@($(CC) $(CCFLAGS) $< $(CCOUT) $(SRC)/$@ 2>/tmp/err.log 1>&2) || $(printerr)
 
