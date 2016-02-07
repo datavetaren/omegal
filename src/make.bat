@@ -4,12 +4,6 @@ SET CHOOSEVC=
 
 REM SET CHOOSEVC=VS110
 
-WHERE /q gmake.exe
-IF ERRORLEVEL 1 (
-ECHO Couldn't find gmake.exe. Please install.
-GOTO:EOF
-)
-
 WHERE /q cl.exe
 IF NOT ERRORLEVEL 1 (
 GOTO :DOGMAKE
@@ -49,4 +43,4 @@ IF DEFINED !VCARG! (
 GOTO:EOF
 
 :DOGMAKE
-gmake %*
+..\env\gmake %*
