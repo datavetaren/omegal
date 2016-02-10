@@ -1,6 +1,10 @@
 #ifndef _Primes_hpp
 #define _Primes_hpp
 
+#include "basic.hpp"
+
+namespace PROJECT {
+
 class Primes {
 public:
     static int nextPrime();
@@ -18,5 +22,7 @@ private:
     static int thePrimesSize;
     static int thePrimesCapacity;
 };
+
+}
 
 #endif

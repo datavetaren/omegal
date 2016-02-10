@@ -2,6 +2,8 @@
 #include <math.h>
 #include "Primes.hpp"
 
+namespace PROJECT {
+
 int * Primes::thePrimes = NULL;
 int Primes::thePrimesSize = 0;
 int Primes::thePrimesCapacity = 0;
@@ -86,4 +88,6 @@ void Primes::cleanup()
 {
     delete thePrimes;
     thePrimes = NULL;
+}
+
 }

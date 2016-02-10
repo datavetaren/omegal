@@ -1,10 +1,13 @@
 #include "basic.hpp"
+#include "Murmur3.hpp"
 
 #ifdef __GNUC__
 #define FORCE_INLINE __attribute__((always_inline)) inline
 #else
 #define FORCE_INLINE inline
 #endif
+
+namespace PROJECT {
 
 static FORCE_INLINE uint32_t rotl32 ( uint32_t x, int8_t r )
 {
@@ -77,3 +80,4 @@ uint32_t Murmur3(const void * key, int len, uint32_t seed )
     return h1;
 } 
 
+}
