@@ -6,10 +6,11 @@ ifeq ($(OS),Windows_NT)
   LINK := link
   CC := cl
   CCFLAGS := /c /nologo
+  CCINC := /I
   CCOUT := /Fo:
   LINKOUT := /out:
   LINKFLAGS := /nologo
-  RM := del
+  RM0 := del /Q
   CP := copy /f /q
 else
   OBJ_EXT := .o
@@ -21,7 +22,7 @@ else
   CCOUT := -o
   LINKOUT := -o
   LINKFLAGS := -g
-  RM := rm -f
+  RM0 := rm -f
   CP := cp -f
 
   green="\033[0;32m"
@@ -39,6 +40,46 @@ OUT := $(ROOT)/out
 BIN := $(ROOT)/bin
 
 .PHONY: clean run all test
+
+#
+# To fool GNU-Make that something has been done.
+#
+ifeq ($(OS),Windows_NT)
+NOTHING := touch kalle.xxx
+else
+NOTHING := $(shell pwd >/dev/null)
+endif
+
+ifeq ($(OS),Windows_NT)
+define echon
+	echo xxx >/tmp/nul.txt
+	cmd.exe /c set /p dummyName="$1 " </tmp/nul.txt
+endef
+else
+define RM
+	echo $1 $(nonl)
+endef
+endif
+
+ifeq ($(OS),Windows_NT)
+define slashfix
+	$(subst /,\\,$1)
+endef
+else
+define slashfix
+	$1
+endef
+endif
+
+ifeq ($(OS),Windows_NT)
+define RM
+	$(foreach F,$1,$(if $(wildcard $F), $(shell cmd.exe /c $(RM0) $(call slashfix, $F))))
+endef
+else
+define RM
+	$(RM0) $1
+endef
+endif
 
 define printerr
         if [ -s /tmp/err.log ]; \
@@ -75,28 +116,28 @@ $(GOAL) : $(BIN) $(OUT) $(OBJ_FILES)
 
 $(BIN)/test/%$(EXE_EXT) : $(OUT)/test/%$(OBJ_EXT) $(OBJ_FILES0)
 	@mkdir -p $(BIN)/test/
-	@($(RM) /tmp/err.log)
+	@$(call RM, /tmp/err.log)
 	@($(LINK) $(LINKFLAGS) $(LINKOUT)$@ $< $(OBJ_FILES0) 2>/tmp/err.log 1>&2) || $(printerr)
-	@($(RM) /tmp/err.log)
+	@$(call RM, /tmp/err.log)
 
 $(BIN)/test/%$(EXE_EXT).ok : $(BIN)/test/%$(EXE_EXT)
-	@(echo $(yellow) $(bold) $<$(off)$(white) $(nonl))
+	@$(call echon, $(yellow) $(bold) $<$(off)$(white)) 
 	@( $< >$<.log 2>&1) || ($(CP) $<.log /tmp/err.log; exit 1) || $(printtest)
 	@touch $@
-	@(echo $(green)$(bold)[OK]$(off)$(white))
+	@(echo $(green)$(bold) [OK]$(off)$(white))
 
 $(OUT)/test/%$(OBJ_EXT) : $(SRC)/test/%.cpp
-	@(echo $(green) $(bold) $(notdir $<) $(off) $(white) $(nonl))
+	@$(call echon, $(green) $(bold)  $(notdir $<) $(off) $(white)) 
 	@mkdir -p /tmp
-	@($(RM) /tmp/err.log)
+	@$(call RM, /tmp/err.log)
 	@mkdir -p $(OUT)/test/
 	@($(CC) $(CCFLAGS) $(CCINC) $(SRC) $< $(CCOUT) $@ 2>/tmp/err.log 1>&2) || $(printerr)
 
 $(OUT)/%$(OBJ_EXT) : $(SRC)/%.cpp
 	@(echo $(green) $(bold) $(notdir $<) $(off) $(white))
 	@mkdir -p /tmp
-	@($(RM) /tmp/err.log)
-	@($(CC) $(CCFLAGS) $< $(CCOUT) $(SRC)/$@ 2>/tmp/err.log 1>&2) || $(printerr)
+	@$(call RM, /tmp/err.log)
+	@($(CC) $(CCFLAGS) $< $(CCOUT) $@ 2>/tmp/err.log 1>&2) || $(printerr)
 
 $(OUT) :
 	@mkdir -p $@
@@ -105,7 +146,9 @@ $(BIN) :
 	@mkdir -p $@
 
 clean :
-	$(RM) $(OBJ_FILES) $(GOAL) $(TEST_OBJ_FILES) $(TEST_EXE_FILES) $(TEST_OK_FILES) $(TEST_LOG_FILES)
+	@touch /tmp/err.log
+	@$(call RM, /tmp/err.log)
+	@$(call RM, $(OBJ_FILES) $(GOAL) $(TEST_OBJ_FILES) $(TEST_EXE_FILES) $(TEST_OK_FILES) $(TEST_LOG_FILES))
 
 run : $(GOAL)
 	$(GOAL)
