@@ -56,7 +56,7 @@ define echon
 	cmd.exe /c set /p dummyName="$1 " </tmp/nul.txt
 endef
 else
-define RM
+define echon
 	echo $1 $(nonl)
 endef
 endif
