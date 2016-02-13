@@ -2,6 +2,8 @@
 #define _Term_hpp
 
 #include "basic.hpp"
+#include "HashMap.hpp"
+#include "Growing.hpp"
 
 namespace PROJECT {
 
@@ -35,8 +37,6 @@ namespace PROJECT {
 
 // Index to heap.
 
-typedef uint32_t NativeType;
-
 class Index {
 public:
     Index(NativeType index) { thisIndex = index; }
@@ -54,6 +54,7 @@ public:
 
 class ConstRef : public Index {
 public:
+    inline ConstRef() : Index(0) { }
     inline ConstRef(NativeType index) : Index(index) { }
 };
 
@@ -94,93 +95,86 @@ class Str : protected Cell {
     inline Str(HeapRef heapRef) : Cell( STR, heapRef.getIndex()) { }
 };
 
-template<typename T> class Growing {
-protected:
-    Growing(size_t initialCapacity)
-    {
-	thisCapacity = initialCapacity;
-	thisSize = 0;
-	thisData = new T [thisCapacity];
-    }
+class ConstString {
+public:
+    ConstString(Char *str) : thisString(str) { }
 
-    inline size_t allocate(size_t num)
-    {
-	ensureCapacity(num);
-	size_t r = thisSize;
-	thisSize += num;
-	return r;
-    }
-
-    inline void ensureCapacity(size_t num)
-    {
-	if (thisSize + num > thisCapacity) {
-	    grow(num);
+    const Char * getString() const { return thisString; }
+    size_t getStringLength() const {
+	size_t cnt = 0;
+	Char *c = thisString;
+	while (c != 0) {
+	    cnt++;
+	    c++;
 	}
+	return cnt;
     }
-
-    inline size_t getSize() const
-    {
-	return thisSize;
-    }
-
-    void grow(size_t num)
-    {
-	while (thisSize + num > thisCapacity) {
-	    thisCapacity *= 2;
-	}
-	T *newData = new T [thisCapacity];
-	memcpy(newData, thisData, sizeof(T)*thisSize);
-	delete [] thisData;
-	thisData = newData;
-    }
-
-    T * getData(size_t atIndex)
-    {
-	return &thisData[atIndex];
-    }
-
 private:
-    size_t thisCapacity;
-    size_t thisSize;
-    T *thisData;
+    Char *thisString;
 };
 
-class ConstPool : public Growing<Char> {
+class ConstPool : public GrowingAllocator<Char> {
 public:
-    ConstPool(size_t capacity) : Growing<Char>(capacity) { }
+    ConstPool(size_t capacity) : GrowingAllocator<Char>(capacity) { }
 
     size_t addString(const char *asciiStr) {
 	size_t n = strlen(asciiStr)+1;
-	size_t r = allocate(n);
-	Char *data = getData(r);
+	Char *data = allocate(n);
 	for (size_t i = 0; i < n; i++) {
 	    data[i] = (Char)asciiStr[i];
 	}
-	return r;
+	return toRelative(data);
+    }
+
+    const ConstString getString(ConstRef ref) {
+	return ConstString(toAbsolute(ref.getIndex()));
     }
 };
 
-class ConstTable : public Growing<NativeType> {
+class ConstIndex : public GrowingAllocator<HashMapEntry<ConstString, ConstRef> > {
+public:
+    
+};
+
+class ConstTable : public GrowingAllocator<ConstRef> {
 public:
     static const int INITIAL_CONST_POOL_SIZE = 65536;
     static const int INITIAL_CONST_TABLE_SIZE = 1024;
 
-    ConstTable() : Growing<NativeType>(INITIAL_CONST_TABLE_SIZE),
+    ConstTable() : GrowingAllocator<ConstRef>(INITIAL_CONST_TABLE_SIZE),
 		   thisPool(INITIAL_CONST_POOL_SIZE)
     {
     }
+
+    std::string getNameAscii(ConstRef ref);
+
+    ConstRef addConst(const char *name)
+    {
+	size_t pos = thisPool.addString(name);
+	ConstRef *cr = allocate(1);
+	*cr = pos;
+	return *cr;
+    }
+
+    friend std::ostream & operator << (std::ostream &out, ConstTable &table)
+    {
+	table.print(out);
+	return out;
+    }
+
+    void print(std::ostream &out);
 
 private:
     ConstPool thisPool;
 };
 
-class Heap : public Growing<Cell> {
+class Heap : public GrowingAllocator<Cell> {
 public:
-    Heap(size_t capacity) : Growing<Cell>(capacity) { }
+    Heap(size_t capacity) : GrowingAllocator<Cell>(capacity) { }
 
     inline Ref newVar()
     {
-	Ref ref((NativeType)allocate(1));
+	Ref ref((NativeType)toRelative(allocate(1)));
 	return ref;
     }
 };

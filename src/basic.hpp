@@ -22,6 +22,8 @@ struct remove_cv {
     typedef typename remove_volatile<typename remove_const<T>::type>::type type;
 };
 
+typedef uint32_t NativeType;
+
 typedef uint32_t Char;
 typedef std::basic_string<Char> String;
 
