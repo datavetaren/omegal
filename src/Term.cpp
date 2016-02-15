@@ -43,12 +43,25 @@ ConstRef ConstTable::addConst(const char *name, size_t arity)
 ConstRef ConstTable::findConst(const char *name, size_t arity) const
 {
     size_t n = strlen(name);
-    Char chs[n+1];
-    for (size_t i = 0; i <= n; i++) {
-	chs[i] = name[i];
+    if (n < 1023) {
+	Char chs[1024];
+	for (size_t i = 0; i <= n; i++) {
+	    chs[i] = (Char)name[i];
+	}
+	ConstString str(chs, n, arity);
+	return thisIndexing.find(str);
+    } else {
+	// We should disable this code path once we add disable
+	// for new/delete allocation.
+	Char *chs = new Char[n+1];
+	for (size_t i = 0; i <= n; i++) {
+	    chs[i] = (Char)name[i];
+	}
+	ConstString str(chs, n, arity);
+	ConstRef ref = thisIndexing.find(str);
+	delete [] chs;
+	return ref;
     }
-    ConstString str(chs, n, arity);
-    return thisIndexing.find(str);
 }
 
 void ConstTable::print(std::ostream &out)
