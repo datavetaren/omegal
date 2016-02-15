@@ -201,7 +201,7 @@ public:
     const _V operator [] (const _K &k) const {
 	_E *prev = NULL;
 	size_t bucketIndex = 0;
-	_E *entry = findRef(k, false, prev, bucketIndex);
+	_E *entry = const_cast<HashMap<_K,_V,_Alloc> *>(this)->findRef(k, false, prev, bucketIndex);
 	assert(entry != NULL);
 	return entry->getValue();
     }
@@ -222,11 +222,11 @@ public:
 	return before != thisNumEntries;
     }
 
-    const _V * get(const _K &k)
+    const _V * get(const _K &k) const
     {
 	_E *prev = NULL;
 	size_t bucketIndex = 0;
-	_E *entry = findRef(k, false, prev, bucketIndex);
+	_E *entry = const_cast<HashMap<_K,_V,_Alloc> *>(this)->findRef(k, false, prev, bucketIndex);
 	if (entry == NULL) {
 	    return NULL;
 	}

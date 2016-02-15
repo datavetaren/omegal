@@ -4,6 +4,7 @@
 #include "basic.hpp"
 #include "HashMap.hpp"
 #include "Growing.hpp"
+#include <memory.h>
 
 namespace PROJECT {
 
@@ -43,6 +44,11 @@ public:
 
     inline NativeType getIndex() const { return thisIndex; }
     inline void setIndex(NativeType index) { thisIndex = index; }
+
+    bool operator == (const Index &other) const {
+	return getIndex() == other.getIndex();
+    }
+
 private:
    NativeType thisIndex;
 };
@@ -56,6 +62,8 @@ class ConstRef : public Index {
 public:
     inline ConstRef() : Index(0) { }
     inline ConstRef(NativeType index) : Index(index) { }
+
+    friend std::ostream & operator << (std::ostream &out, const ConstRef &cr);
 };
 
 class Cell {
@@ -82,79 +90,145 @@ private:
 
 class Ref : protected Cell {
 public:
-    inline Ref(HeapRef heapRef) : Cell( REF, heapRef.getIndex()) { }
     inline HeapRef getHeapRef() const { return HeapRef(getValue()); }
+
+private:
+    friend class Heap;
+    inline Ref(HeapRef heapRef) : Cell( REF, heapRef.getIndex()) { }
+    inline Cell toCell() { return *this; }
 };
 
 class Con : protected Cell {
-    inline Con(ConstRef constRef) : Cell( CON, constRef.getIndex()) { }
+public:
     inline ConstRef getConstRef() const { return ConstRef(getValue()); }
+private:
+    friend class Heap;
+    inline Con(ConstRef constRef) : Cell( CON, constRef.getIndex()) { }
+    inline Cell toCell() { return *this; }
 };
 
 class Str : protected Cell {
+private:
+    friend class Heap;
     inline Str(HeapRef heapRef) : Cell( STR, heapRef.getIndex()) { }
 };
 
 class ConstString {
 public:
-    ConstString(Char *str) : thisString(str) { }
+    ConstString(Char *str, size_t n, size_t arity)
+        : thisString(str), thisLength(n), thisArity(arity) { }
 
     const Char * getString() const { return thisString; }
-    size_t getStringLength() const {
-	size_t cnt = 0;
-	Char *c = thisString;
-	while (c != 0) {
-	    cnt++;
-	    c++;
-	}
-	return cnt;
+
+    size_t getLength() const {
+	return thisLength;
     }
+
+    size_t getArity() const {
+	return thisArity;
+    }
+
+    bool operator == (const ConstString &other) const
+    {
+	if (getLength() != other.getLength()) {
+	    return false;
+	}
+	if (getArity() != other.getArity()) {
+	    return false;
+	}
+	return memcmp(thisString, other.thisString, getLength()*sizeof(Char)) == 0;
+    }
+
+    friend std::ostream & operator << (std::ostream &out, const ConstString &str);
+
 private:
+    size_t thisLength;
+    size_t thisArity;
     Char *thisString;
+};
+
+template<> struct HashOf<ConstString> {
+    static uint32_t value(const ConstString &str) 
+    {
+	return Murmur3(str.getString(), str.getLength()*sizeof(Char), HASHMAP_SEED) + str.getArity();
+    }
 };
 
 class ConstPool : public GrowingAllocator<Char> {
 public:
     ConstPool(size_t capacity) : GrowingAllocator<Char>(capacity) { }
 
-    size_t addString(const char *asciiStr) {
-	size_t n = strlen(asciiStr)+1;
-	Char *data = allocate(n);
-	for (size_t i = 0; i < n; i++) {
-	    data[i] = (Char)asciiStr[i];
+    ConstString addString(const char *asciiStr, size_t arity) {
+	size_t n = strlen(asciiStr);
+	Char *data = allocate(1+n+1);
+	data[0] = (Char)n;
+	data[1] = (Char)arity;
+	for (size_t i = 0; i <= n; i++) {
+	    data[i+2] = (Char)asciiStr[i];
 	}
-	return toRelative(data);
+	return ConstString(&data[2], n, arity);
     }
 
-    const ConstString getString(ConstRef ref) {
-	return ConstString(toAbsolute(ref.getIndex()));
+    size_t toRelativePointer(const ConstString &str)
+    {
+	const Char *data = str.getString();
+	return toRelative(data)-2;
+    }
+
+    ConstString getString(size_t rel) {
+	Char *data = toAbsolute(rel);
+	return ConstString(&data[2], (size_t)data[0], (size_t)data[1]);
     }
 };
 
-class ConstIndex : public GrowingAllocator<HashMapEntry<ConstString, ConstRef> > {
+class ConstIndexing : public HashMap<ConstString, ConstRef> {
 public:
-    
+   ConstIndexing(size_t initialCapacity) : HashMap(initialCapacity) {
+   }
+
+   void add(const ConstString &str, ConstRef cr)
+   {
+       put(str, cr);
+   }
+
+   ConstRef find(const ConstString &str) const
+   {
+       const ConstRef *ref = get(str);
+       if (ref == NULL) {
+	   return ConstRef();
+       } else {
+	   return *ref;
+       }
+   }
 };
 
-class ConstTable : public GrowingAllocator<ConstRef> {
+class ConstTable;
+
+class Const {
+public:
+    Const(const ConstTable &table, ConstRef ref)
+        : thisTable(table), thisRef(ref) { }
+
+    friend std::ostream & operator << (std::ostream &out, const Const &c);
+private:
+    const ConstTable &thisTable;
+    ConstRef thisRef;
+};
+
+class ConstTable : public GrowingAllocator<NativeType> {
 public:
     static const int INITIAL_CONST_POOL_SIZE = 65536;
     static const int INITIAL_CONST_TABLE_SIZE = 1024;
 
-    ConstTable() : GrowingAllocator<ConstRef>(INITIAL_CONST_TABLE_SIZE),
-		   thisPool(INITIAL_CONST_POOL_SIZE)
+    ConstTable() : GrowingAllocator<NativeType>(INITIAL_CONST_TABLE_SIZE),
+		   thisPool(INITIAL_CONST_POOL_SIZE),
+		   thisIndexing(Primes::nextPrime(INITIAL_CONST_POOL_SIZE))
     {
     }
 
-    std::string getNameAscii(ConstRef ref);
-
-    ConstRef addConst(const char *name)
-    {
-	size_t pos = thisPool.addString(name);
-	ConstRef *cr = allocate(1);
-	*cr = pos;
-	return *cr;
-    }
+    Const getConst(ConstRef ref) const;
+    ConstRef findConst(const char *name, size_t arity) const;
+    ConstRef addConst(const char *name, size_t arity);
 
     friend std::ostream & operator << (std::ostream &out, ConstTable &table)
     {
@@ -166,7 +240,9 @@ public:
 
 private:
     ConstPool thisPool;
+    ConstIndexing thisIndexing;
 };
+
 
 class Heap : public GrowingAllocator<Cell> {
 public:
@@ -174,8 +250,18 @@ public:
 
     inline Ref newVar()
     {
-	Ref ref((NativeType)toRelative(allocate(1)));
+	Cell *cell = allocate(1);
+	Ref ref(toRelative(cell));
+	*cell = ref.toCell();
 	return ref;
+    }
+
+    inline Con newConst(ConstRef constRef)
+    {
+	Cell *cell = allocate(1);
+	Con con(constRef);
+	*cell = con.toCell();
+	return con;
     }
 };
 

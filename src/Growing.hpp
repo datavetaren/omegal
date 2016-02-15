@@ -11,6 +11,26 @@ public:
     typedef T * pointer;
     typedef const T * const_pointer;
 
+    class Ptr {
+    public:
+	Ptr(GrowingAllocator<T> &ga, T *ptr)
+	    : thisGrowingAllocator(ga), thisRelative(ga.toRelative(ptr)) { }
+	Ptr(GrowingAllocator<T> &ga, size_t relative)
+	    : thisGrowingAllocator(ga), thisRelative(relative) { }
+
+	T * operator * () const {
+	    return thisGrowingAllocator.toAbsolute(thisRelative);
+	}
+
+	size_t toRelative() const {
+	    return thisRelative;
+	}
+
+    private:
+	GrowingAllocator<T> &thisGrowingAllocator;
+	size_t thisRelative;
+    };
+
     GrowingAllocator(size_t initialCapacity = 4096) throw() : std::allocator<T>()
     {
 	thisCapacity = initialCapacity;
@@ -38,7 +58,7 @@ public:
 	// is to do garbage collection.
     }
 
-    inline size_t toRelative(T *p) const
+    inline size_t toRelative(const T *p) const
     {
 	if (p == NULL) {
 	    return 0;
