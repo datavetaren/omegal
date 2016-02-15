@@ -27,9 +27,46 @@ void testConst()
     assert(table.findConst("testar", 2) == ConstRef());
 }
 
+void testWAMBookFigure21()
+{
+    std::cout << "testWAMBookFigure21() -----------------------\n";
+    std::cout << "    (wambook.sourceforge.net, page 11)\n";
+
+    // Ok, I know the offset is +1 (if you compare it with WAM book)
+    // but I reserve 0 to be the NULL pointer as I store relative pointers
+    // and 0 has this special meaning. (Close enough!)
+
+    Heap heap;
+
+    ConstRef h2 = heap.addConst("h", 2);
+    ConstRef f1 = heap.addConst("f", 1);
+    ConstRef p3 = heap.addConst("p", 3);
+
+    heap.newStr(heap.top() + 1);
+    heap.newCon(h2);
+    heap.newRef();
+    heap.newRef();
+    heap.newStr(heap.top() + 1);
+    heap.newCon(f1);
+    heap.newRef(heap.first() + 3);
+    heap.newStr(heap.top() + 1);
+    heap.newCon(p3);
+    heap.newRef(heap.first() + 2);
+    heap.newStr(heap.first() + 1);
+    heap.newStr(heap.first() + 5);
+
+    heap.print(std::cout);
+
+    std::string asList = heap.toString();
+    std::cout << "AS LIST: " << asList << "\n";
+
+    assert(asList == "[STR:2, CON:h/2, REF:3, REF:4, STR:6, CON:f/1, REF:4, STR:9, CON:p/3, REF:3, STR:2, STR:6]");
+}
+
 int main(int argc, char *argv[] )
 {
     testConst();
+    testWAMBookFigure21();
 
     return 0;
 }

@@ -5,6 +5,7 @@
 #include "HashMap.hpp"
 #include "Growing.hpp"
 #include <memory.h>
+#include <sstream>
 
 namespace PROJECT {
 
@@ -26,9 +27,9 @@ namespace PROJECT {
 //   <30 bits> [ConstIndex] 01   CON Constant
 //   <30 bits> [HeapIndex]  10   STR Structure (pointing at functor+arity)
 //   <30 bits> [..........] 11   EXT
-//                     000  11   EXT INT32 (next word is a 32-bit int)
-//                     001  11   EXT INT64 (next 2 words is a 64-bit int)
-//                     010  11   EXT FLOAT (next word is a 32-bit float)
+//   <24 bits> <3 bits>000  11   EXT INT32 (next word is a 32-bit int)
+//   num cells         001  11   EXT INT64 (next 2 words is a 64-bit int)
+//   following         010  11   EXT FLOAT (next word is a 32-bit float)
 //                     011  11   EXT DOUBLE (next 2 words is a 64-bit double)
 //                     100  11   EXT INT128 (next 4 words is a 128-bit int)
 //                     101  11   EXT ARRAY (next is an array. Immediate word
@@ -45,9 +46,40 @@ public:
     inline NativeType getIndex() const { return thisIndex; }
     inline void setIndex(NativeType index) { thisIndex = index; }
 
+    void operator ++ (int) {
+	thisIndex++;
+    }
+
+    Index & operator ++ () {
+	++thisIndex;
+	return *this;
+    }
+
+
     bool operator == (const Index &other) const {
 	return getIndex() == other.getIndex();
     }
+
+    bool operator <= (const Index &other) const {
+	return getIndex() <= other.getIndex();
+    }
+
+    bool operator != (const Index &other) const {
+	return getIndex() != other.getIndex();
+    }
+
+    bool operator < (const Index &other) const {
+	return getIndex() < other.getIndex();
+    }
+
+    bool operator > (const Index &other) const {
+	return getIndex() > other.getIndex();
+    }
+
+    bool operator >= (const Index &other) const {
+	return getIndex() >= other.getIndex();
+    }
+
 
 private:
    NativeType thisIndex;
@@ -56,6 +88,8 @@ private:
 class HeapRef : public Index {
 public:
     inline HeapRef(NativeType index) : Index(index) { }
+    inline HeapRef operator + (int val) const { return HeapRef(getIndex()+val); }
+    inline HeapRef operator - (int val) const { return HeapRef(getIndex()-val); }
 };
 
 class ConstRef : public Index {
@@ -73,7 +107,8 @@ public:
 
     inline Cell() : thisCell(0) { }
     inline Cell(Tag tag, NativeType value) : thisCell(((NativeType)tag) | value << 2) { }
-    inline Cell(ExtTag tag) : thisCell((NativeType)tag) { }
+    inline Cell(ExtTag tag, NativeType numCells)
+        : thisCell((NativeType)tag | (numCells << 8)) { }
     inline Cell(NativeType rawValue) : thisCell(rawValue) { }
     inline Cell(const Cell &other) : thisCell(other.thisCell) { }
     inline void operator = (const Cell &other) { thisCell = other.thisCell; }
@@ -84,11 +119,13 @@ public:
     inline NativeType getValue() const { return thisCell >> 2; }
     inline void setValue(NativeType val) { thisCell = (thisCell & 0x3) | (val << 2); }
 
+    inline size_t extNumCells() const { return thisCell >> 8; }
+
 private:
     NativeType thisCell;
 };
 
-class Ref : protected Cell {
+class Ref : public Cell {
 public:
     inline HeapRef getHeapRef() const { return HeapRef(getValue()); }
 
@@ -98,7 +135,7 @@ private:
     inline Cell toCell() { return *this; }
 };
 
-class Con : protected Cell {
+class Con : public Cell {
 public:
     inline ConstRef getConstRef() const { return ConstRef(getValue()); }
 private:
@@ -107,10 +144,12 @@ private:
     inline Cell toCell() { return *this; }
 };
 
-class Str : protected Cell {
+class Str : public Cell {
 private:
     friend class Heap;
+private:
     inline Str(HeapRef heapRef) : Cell( STR, heapRef.getIndex()) { }
+    inline Cell toCell() { return *this; }
 };
 
 class ConstString {
@@ -204,6 +243,7 @@ public:
 
 class ConstTable;
 
+    /*
 class Const {
 public:
     Const(const ConstTable &table, ConstRef ref)
@@ -214,6 +254,7 @@ private:
     const ConstTable &thisTable;
     ConstRef thisRef;
 };
+    */
 
 class ConstTable : public GrowingAllocator<NativeType> {
 public:
@@ -226,7 +267,7 @@ public:
     {
     }
 
-    Const getConst(ConstRef ref) const;
+    // Const getConst(ConstRef ref) const;
     ConstRef findConst(const char *name, size_t arity) const;
     ConstRef addConst(const char *name, size_t arity);
 
@@ -236,7 +277,8 @@ public:
 	return out;
     }
 
-    void print(std::ostream &out);
+    void print(std::ostream &out) const;
+    void printConst(std::ostream &out, const ConstRef &ref) const;
 
 private:
     ConstPool thisPool;
@@ -246,9 +288,19 @@ private:
 
 class Heap : public GrowingAllocator<Cell> {
 public:
-    Heap(size_t capacity) : GrowingAllocator<Cell>(capacity) { }
+    Heap(size_t capacity = 65536) : GrowingAllocator<Cell>(capacity) { }
 
-    inline Ref newVar()
+    inline ConstRef addConst(const char *name, size_t arity)
+    {
+	return thisConstTable.addConst(name, arity);
+    }
+
+    inline ConstRef findConst(const char *name, size_t arity)
+    {
+	return thisConstTable.findConst(name, arity);
+    }
+
+    inline Ref newRef()
     {
 	Cell *cell = allocate(1);
 	Ref ref(toRelative(cell));
@@ -256,13 +308,58 @@ public:
 	return ref;
     }
 
-    inline Con newConst(ConstRef constRef)
+    inline Ref newRef(HeapRef href)
+    {
+	Cell *cell = allocate(1);
+	Ref ref(href);
+	*cell = ref.toCell();
+	return ref;
+    }
+
+    inline Con newCon(ConstRef constRef)
     {
 	Cell *cell = allocate(1);
 	Con con(constRef);
 	*cell = con.toCell();
 	return con;
     }
+
+    inline Str newStr(HeapRef ref)
+    {
+	Cell *cell = allocate(1);
+	Str str(ref.getIndex());
+	*cell = str.toCell();
+	return str;
+    }
+
+    inline Cell getCell(HeapRef ref) const
+    {
+	return *toAbsolute(ref.getIndex());
+    }
+
+    void printCell(std::ostream &out, Cell cell) const;
+
+    inline HeapRef first() const
+    {
+	return HeapRef(1);
+    }
+
+    inline HeapRef top() const
+    {
+	return HeapRef(1+getSize());
+    }
+
+    void print( std::ostream &out ) const;
+    void print( std::ostream &out, HeapRef from, HeapRef to ) const;
+
+    std::string toString() const;
+    std::string toString(HeapRef from, HeapRef to) const;
+
+private:
+    void printTag(std::ostream &out, Cell cell) const;
+    void printConst(std::ostream &out, Cell cell) const;
+
+    ConstTable thisConstTable;
 };
 
 }
