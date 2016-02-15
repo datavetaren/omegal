@@ -11,6 +11,7 @@ std::ostream & operator << (std::ostream &out, const ConstRef &ref)
     } else {
 	out << "ConstRef(" << ref.getIndex() << ")";
     }
+    return out;
 }
 
 std::ostream & operator << (std::ostream &out, const ConstString &str)
