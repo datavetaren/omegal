@@ -259,10 +259,10 @@ void Heap::printStruct(std::ostream &out, HeapRef ref) const
 
 void Heap::printRef(std::ostream &out, Cell cell) const
 {
-    const ConstRef *pcref = thisTempMap.get(cell);
+    const ConstRef *pcref = thisNameMap.get(cell);
     if (pcref == NULL) {
-	ConstRef cref = thisConstTable.getConst(thisTempMap.numEntries());
-	thisTempMap.put(cell, cref);
+	ConstRef cref = thisConstTable.getConst(thisNameMap.numEntries());
+	thisNameMap.put(cell, cref);
 	thisConstTable.printConstNoArity(out, cref);
 	return;
     }

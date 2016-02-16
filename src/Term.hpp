@@ -405,7 +405,7 @@ private:
 
     ConstTable thisConstTable;
     mutable Stack<Cell> thisStack;
-    mutable HashMap<Cell, ConstRef> thisTempMap;
+    mutable HashMap<Cell, ConstRef> thisNameMap;
     
 };
 
