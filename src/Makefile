@@ -17,7 +17,7 @@ else
   EXE_EXT :=
   LINK := g++
   CC := g++
-  CCFLAGS := -c -g
+  CCFLAGS := -c -g -Werror -Wall
   CCINC := -I
   CCOUT := -o
   LINKOUT := -o

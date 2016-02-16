@@ -30,7 +30,7 @@ void testConst()
 void testWAMBookFigure21()
 {
     std::cout << "testWAMBookFigure21() -----------------------\n";
-    std::cout << "    (wambook.sourceforge.net, page 11)\n";
+    std::cout << "(wambook.sourceforge.net, page 11)\n";
 
     // Ok, I know the offset is +1 (if you compare it with WAM book)
     // but I reserve 0 to be the NULL pointer as I store relative pointers
@@ -55,12 +55,24 @@ void testWAMBookFigure21()
     heap.newStr(heap.first() + 1);
     heap.newStr(heap.first() + 5);
 
-    heap.print(std::cout);
+    heap.printRaw(std::cout);
 
-    std::string asList = heap.toString();
+    std::string asList = heap.toRawString();
     std::cout << "AS LIST: " << asList << "\n";
 
     assert(asList == "[STR:2, CON:h/2, REF:3, REF:4, STR:6, CON:f/1, REF:4, STR:9, CON:p/3, REF:3, STR:2, STR:6]");
+
+    std::cout << "AS TERM: ";
+    heap.print(std::cout, heap.first() + 7);
+    std::cout << "\n";
+
+    const std::string expected = "p(A, h(A, B), f(B))";
+    std::cout << "EXPECTED: "<< expected << "\n";
+
+    std::string got = heap.toString(heap.first() + 7);
+    std::cout << "GOT     : " << got << "\n";
+
+    assert(expected == got);
 }
 
 int main(int argc, char *argv[] )

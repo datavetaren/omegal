@@ -52,6 +52,11 @@ public:
 	return r;
     }
 
+    inline void trim(size_type num)
+    {
+	thisSize = num;
+    }
+
     inline void deallocate(pointer p, size_type)
     {
 	// We don't do anything on deallocate. The intention

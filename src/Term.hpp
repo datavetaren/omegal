@@ -4,6 +4,7 @@
 #include "basic.hpp"
 #include "HashMap.hpp"
 #include "Growing.hpp"
+#include "Stack.hpp"
 #include <memory.h>
 #include <sstream>
 
@@ -103,7 +104,7 @@ public:
 class Cell {
 public:
     enum Tag { REF = 0, CON = 1, STR = 2, EXT = 3 };
-    enum ExtTag { EXT_INT32 = 3, EXT_INT64 = 7, EXT_FLOAT = 11, EXT_DOUBLE = 15, EXT_INT128 = 19, EXT_ARRAY = 23 };
+    enum ExtTag { EXT_INT32 = 3, EXT_INT64 = 7, EXT_FLOAT = 11, EXT_DOUBLE = 15, EXT_INT128 = 19, EXT_ARRAY = 23, EXT_COMMA = 27, EXT_END = 31 };
 
     inline Cell() : thisCell(0) { }
     inline Cell(Tag tag, NativeType value) : thisCell(((NativeType)tag) | value << 2) { }
@@ -119,10 +120,23 @@ public:
     inline NativeType getValue() const { return thisCell >> 2; }
     inline void setValue(NativeType val) { thisCell = (thisCell & 0x3) | (val << 2); }
 
+    inline NativeType getRawValue() const { return thisCell; }
+
     inline size_t extNumCells() const { return thisCell >> 8; }
+
+    inline bool operator == (const Cell &other) const { return thisCell == other.thisCell; }
+    inline bool operator != (const Cell &other) const { return thisCell != other.thisCell; }
+
 
 private:
     NativeType thisCell;
+};
+
+template<> struct HashOf<Cell> {
+    static uint32_t value(const Cell &cell) 
+    {
+	return cell.getRawValue();
+    }
 };
 
 class Ref : public Cell {
@@ -155,7 +169,7 @@ private:
 class ConstString {
 public:
     ConstString(Char *str, size_t n, size_t arity)
-        : thisString(str), thisLength(n), thisArity(arity) { }
+        : thisLength(n), thisArity(arity), thisString(str) { }
 
     const Char * getString() const { return thisString; }
 
@@ -268,6 +282,10 @@ public:
     }
 
     // Const getConst(ConstRef ref) const;
+    ConstRef getConst(const char *name, size_t arity) const;
+    ConstRef getConst(size_t ordinal) const;
+    void getConstName(char *name, size_t ordinal) const;
+
     ConstRef findConst(const char *name, size_t arity) const;
     ConstRef addConst(const char *name, size_t arity);
 
@@ -277,12 +295,15 @@ public:
 	return out;
     }
 
+    size_t getConstArity(const ConstRef &ref) const;
+
     void print(std::ostream &out) const;
     void printConst(std::ostream &out, const ConstRef &ref) const;
+    void printConstNoArity(std::ostream &out, const ConstRef &ref) const;
 
 private:
-    ConstPool thisPool;
-    ConstIndexing thisIndexing;
+    mutable ConstPool thisPool;
+    mutable ConstIndexing thisIndexing;
 };
 
 
@@ -290,14 +311,30 @@ class Heap : public GrowingAllocator<Cell> {
 public:
     Heap(size_t capacity = 65536) : GrowingAllocator<Cell>(capacity) { }
 
+    ConstRef getConst(size_t ordinal);
+    ConstRef getConst(const char *name, size_t arity);
+
     inline ConstRef addConst(const char *name, size_t arity)
     {
 	return thisConstTable.addConst(name, arity);
     }
 
+    inline ConstRef addConst(size_t ordinal);
+
     inline ConstRef findConst(const char *name, size_t arity)
     {
 	return thisConstTable.findConst(name, arity);
+    }
+
+    inline Cell deref(Cell cell) const
+    {
+	while (cell.getTag() == Cell::REF) {
+	    Cell nextCell = *toAbsolute(cell.getValue());
+	    if (nextCell == cell) {
+		return cell;
+	    }
+	}
+	return cell;
     }
 
     inline Ref newRef()
@@ -349,17 +386,27 @@ public:
 	return HeapRef(1+getSize());
     }
 
-    void print( std::ostream &out ) const;
-    void print( std::ostream &out, HeapRef from, HeapRef to ) const;
+    void print( std::ostream &out, HeapRef ref ) const;
+    std::string toString( HeapRef ref) const;
 
-    std::string toString() const;
-    std::string toString(HeapRef from, HeapRef to) const;
+    // ---
+
+    void printRaw( std::ostream &out ) const;
+    void printRaw( std::ostream &out, HeapRef from, HeapRef to ) const;
+
+    std::string toRawString() const;
+    std::string toRawString(HeapRef from, HeapRef to) const;
 
 private:
     void printTag(std::ostream &out, Cell cell) const;
     void printConst(std::ostream &out, Cell cell) const;
+    void printStruct(std::ostream &out, HeapRef href) const;
+    void printRef(std::ostream &out, Cell cell) const;
 
     ConstTable thisConstTable;
+    mutable Stack<Cell> thisStack;
+    mutable HashMap<Cell, ConstRef> thisTempMap;
+    
 };
 
 }
