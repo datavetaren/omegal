@@ -12,6 +12,7 @@ ifeq ($(OS),Windows_NT)
   LINKFLAGS := /nologo
   RM0 := del /Q
   CP := copy /f /q
+  RS := /
 else
   OBJ_EXT := .o
   EXE_EXT :=
@@ -24,6 +25,7 @@ else
   LINKFLAGS := -g
   RM0 := rm -f
   CP := cp -f
+  RS :=
 
   green="\033[0;32m"
   yellow="\033[0;33m"
@@ -35,6 +37,7 @@ else
 
 endif
 
+ENV := $(ROOT)/env
 SRC := $(ROOT)/src
 OUT := $(ROOT)/out
 BIN := $(ROOT)/bin
@@ -75,9 +78,15 @@ ifeq ($(OS),Windows_NT)
 define RM
 	$(foreach F,$1,$(if $(wildcard $F), $(shell cmd.exe /c $(RM0) $(call slashfix, $F))))
 endef
+define MKDIR
+	$(shell cmd.exe /c  $(call slashfix, $(ENV)\mkdirp.bat) $(call slashfix, $1))
+endef
 else
 define RM
 	$(RM0) $1
+endef
+define MKDIR
+	mkdir -p $1
 endef
 endif
 
@@ -110,12 +119,13 @@ test : $(TEST_OK_FILES)
 .SECONDARY :
 
 $(GOAL) : $(BIN) $(OUT) $(OBJ_FILES)
-	@mkdir -p /tmp
+	@$(call MKDIR, /tmp) 
 	@(echo $(green) $(bold) $@ $(off) $(white))
 	@$(LINK) $(LINKFLAGS) $(LINKOUT)$@ $(OBJ_FILES)
 
 $(BIN)/test/%$(EXE_EXT) : $(OUT)/test/%$(OBJ_EXT) $(OBJ_FILES0)
-	@mkdir -p $(BIN)/test/
+	@$(call MKDIR, $(BIN))
+	@$(call MKDIR, $(BIN)/test)
 	@$(call RM, /tmp/err.log)
 	@($(LINK) $(LINKFLAGS) $(LINKOUT)$@ $< $(OBJ_FILES0) 2>/tmp/err.log 1>&2) || $(printerr)
 	@$(call RM, /tmp/err.log)
@@ -128,22 +138,22 @@ $(BIN)/test/%$(EXE_EXT).ok : $(BIN)/test/%$(EXE_EXT)
 
 $(OUT)/test/%$(OBJ_EXT) : $(SRC)/test/%.cpp
 	@$(call echon, $(green) $(bold)  $(notdir $<) $(off) $(white)) 
-	@mkdir -p /tmp
+	@$(call MKDIR, /tmp)
 	@$(call RM, /tmp/err.log)
-	@mkdir -p $(OUT)/test/
+	@$(call MKDIR, $(OUT)/test)
 	@($(CC) $(CCFLAGS) $(CCINC) $(SRC) $< $(CCOUT) $@ 2>/tmp/err.log 1>&2) || $(printerr)
 
 $(OUT)/%$(OBJ_EXT) : $(SRC)/%.cpp
 	@(echo $(green) $(bold) $(notdir $<) $(off) $(white))
-	@mkdir -p /tmp
+	@$(call MKIR, $(RS)/tmp/)
 	@$(call RM, /tmp/err.log)
 	@($(CC) $(CCFLAGS) $< $(CCOUT) $@ 2>/tmp/err.log 1>&2) || $(printerr)
 
 $(OUT) :
-	@mkdir -p $@
+	@$(call MKDIR, $@)
 
 $(BIN) :
-	@mkdir -p $@
+	@$(call MKDIR, $@)
 
 clean :
 	@touch /tmp/err.log
