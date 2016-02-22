@@ -6,6 +6,99 @@
 
 namespace PROJECT {
 
+class PrintState {
+public:
+    static const size_t MAX_INDENT_DEPTH = 100;
+
+    PrintState(const PrintParam &param)
+        : thisParam(param),
+	  thisNeedNewLine(false),
+	  thisColumn(param.getStartColumn()),
+	  thisIndent(0)
+    {
+	for (size_t i = 0; i < MAX_INDENT_DEPTH; i++) {
+	    thisIndentTable[i] = 0;
+	}
+    }
+
+    const PrintParam & getParam() const { return thisParam; }
+
+    size_t getColumn() const { return thisColumn; }
+
+    void markColumn() {
+	thisIndentTable[thisIndent] = thisColumn;
+    }
+
+    bool willWrap(size_t len) const {
+	bool r = thisColumn + len >= thisParam.getEndColumn();
+	return r;
+    }
+
+    size_t willWrapOnLength() const {
+	if (thisColumn < thisParam.getEndColumn()) {
+	    return thisParam.getEndColumn() - thisColumn;
+	} else {
+	    return 0;
+	}
+    }
+
+    size_t getIndent() const { return thisIndent; }
+    void incrementIndent() { thisIndent++; }
+    void decrementIndent() { thisIndent--; }
+
+    bool needNewLine() const {
+	return thisNeedNewLine;
+    }
+
+    PrintState & addToColumn(size_t len)
+    { thisColumn += len;
+      if (thisColumn > thisParam.getEndColumn()) {
+	  thisNeedNewLine = true;
+      }
+      return *this;
+    }
+
+    void resetToColumn(size_t col)
+    {
+	thisNeedNewLine = false;
+	thisColumn = col;
+    }
+
+    void newLine(std::ostream &out)
+    {
+	out << "\n";
+	resetToColumn(0);
+	printIndent(out);
+    }
+
+    void printIndent(std::ostream &out)
+    {
+	size_t col = thisColumn;
+	size_t start = thisParam.getStartColumn();
+	while (col < start) {
+	    col++;
+	    out << " ";
+	}
+
+	size_t iw = thisParam.getIndentWidth();
+	for (size_t i = 0; i < thisIndent; i++) {
+	    size_t p = thisIndentTable[i] != 0 ? thisIndentTable[i] : col+iw;
+	    for (size_t j = col; j < p; j++) {
+		out << " ";
+	    }
+	    col = p;
+	}
+	thisColumn = col;
+    }
+
+private:
+    const PrintParam &thisParam;
+    bool thisNeedNewLine;
+    size_t thisColumn;
+    size_t thisIndent;
+    size_t thisIndentTable[MAX_INDENT_DEPTH];
+};
+
 std::ostream & operator << (std::ostream &out, const ConstRef &ref)
 {
     if (ref.getIndex() == 0) {
@@ -30,6 +123,20 @@ std::ostream & operator << (std::ostream &out, const ConstString &str)
     }
     
     return out;
+}
+
+std::string ConstString::asStdString() const
+{
+    std::stringstream ss;
+    const Char *ch = getString();
+    for (size_t i = 0; i < thisLength; i++) {
+	ss << (char)ch[i];
+    }
+    if (thisArity != 0) {
+	ss << "/";
+	ss << thisArity;
+    }
+    return ss.str();
 }
 
 ConstRef ConstTable::getConst(const char *name, size_t arity) const
@@ -159,6 +266,33 @@ void ConstTable::printConstNoArity(std::ostream &out, const ConstRef &ref) const
     out << str;
 }
 
+size_t ConstTable::getConstLength(const ConstRef &ref) const
+{
+    NativeType *c = toAbsolute(ref.getIndex());
+    NativeType name = c[0];
+    Char *data = thisPool.toAbsolute(name);
+    return static_cast<size_t>(data[0]);
+}
+
+ConstString ConstTable::getConstNameNoArity(const ConstRef &ref) const
+{
+    NativeType *c = toAbsolute(ref.getIndex());
+    NativeType name = c[0];
+    Char *data = thisPool.toAbsolute(name);
+    ConstString str(&data[2], (size_t)data[0], 0);
+    return str;
+}
+
+ConstRef Heap::getConst(const char *name, size_t arity) const
+{
+    return thisConstTable.getConst(name, arity);
+}
+
+ConstRef Heap::getConst(size_t ordinal) const
+{
+    return thisConstTable.getConst(ordinal);
+}
+
 void Heap::printTag(std::ostream &out, Cell cell) const
 {
     switch (cell.getTag()) {
@@ -231,71 +365,178 @@ std::string Heap::toRawString(HeapRef from, HeapRef to) const
     return ss.str();
 }
 
-std::string Heap::toString(HeapRef ref) const
+size_t Heap::getStringLength(Cell cell, size_t maximum) const
+{
+    size_t current = thisStack.getSize();
+
+    thisStack.push(cell);
+
+    size_t len = 0;
+
+    while (current != thisStack.getSize()) {
+	Cell cell = deref(thisStack.pop());
+
+	if (len >= maximum) {
+	    thisStack.trim(current);
+	    return maximum;
+	}
+
+	switch (cell.getTag()) {
+	case Cell::CON:
+	    len += thisConstTable.getConstLength(
+		       reinterpret_cast<Con &>(cell).getConstRef()); break;
+	case Cell::STR:
+	    len += getStringLengthForStruct(cell); break;
+	case Cell::REF:
+	    len += getStringLengthForRef(cell); break;
+        case Cell::EXT:
+	    switch (cell.getExtTag()) {
+	    case Cell::EXT_END:
+		len++;
+		break;
+	    case Cell::EXT_COMMA:
+		len += 2;
+		break;
+	    default:
+		break;
+	    }
+	    break;
+	}
+    }
+    return len;
+}
+
+size_t Heap::getStringLengthForStruct(Cell cell) const
+{
+    size_t len = 0;
+    HeapRef href = toHeapRef(cell);
+    ConstRef cref = const_cast<Heap *>(this)->pushArgs(href);
+    len += thisConstTable.getConstLength(cref);
+    size_t arity = thisConstTable.getConstArity(cref);
+    if (arity > 0) {
+	len++;
+    }
+    return len;
+}
+
+size_t Heap::getStringLengthForRef(Cell cell) const
+{
+    const ConstRef *pcref = thisNameMap.get(cell);
+    if (pcref == NULL) {
+	ConstRef cref = thisConstTable.getConst(thisNameMap.numEntries());
+	thisNameMap.put(cell, cref);
+	return thisConstTable.getConstLength(cref);
+    } else {
+	return thisConstTable.getConstLength(*pcref);
+    }
+}
+
+std::string Heap::toString(Cell cell) const
 {
     std::stringstream ss;
-    print(ss, ref);
+    print(ss, cell);
     return ss.str();
 }
 
-void Heap::printStruct(std::ostream &out, HeapRef ref) const
+ConstRef Heap::pushArgs(HeapRef ref)
 {
     Cell cell = getCell(ref);
     ConstRef cref = reinterpret_cast<Con &>(cell).getConstRef();
-    thisConstTable.printConstNoArity(out, cref);
     size_t arity = thisConstTable.getConstArity(cref);
     if (arity > 0) {
-	out << "(";
 	thisStack.push(Cell(Cell::EXT_END,0));
 	Cell listComma(Cell::EXT_COMMA,0);
 	for (size_t i = 0; i < arity; i++) {
 	    if (i > 0) {
 		thisStack.push(listComma);
 	    }
-	    thisStack.push(getCell(ref+arity-i));
+	    Cell arg = getCell(ref+arity-i);
+	    thisStack.push(arg);
 	}
     }
+    return cref;
 }
 
-void Heap::printRef(std::ostream &out, Cell cell) const
+ConstRef Heap::getRefName(Cell cell) const
 {
     const ConstRef *pcref = thisNameMap.get(cell);
     if (pcref == NULL) {
 	ConstRef cref = thisConstTable.getConst(thisNameMap.numEntries());
 	thisNameMap.put(cell, cref);
-	thisConstTable.printConstNoArity(out, cref);
-	return;
+	return cref;
     }
-    thisConstTable.printConstNoArity(out, *pcref);
+    return *pcref;
 }
 
-void Heap::print(std::ostream &out, HeapRef ref) const
+void Heap::printIndent(std::ostream &out, PrintState &state) const
 {
+    if (state.needNewLine()) {
+	out << "\n";
+	state.resetToColumn(0);
+	state.printIndent(out);
+    }
+}
+
+void Heap::print(std::ostream &out, Cell cell, const PrintParam &param) const
+{
+    PrintState state(param);
+
     size_t current = thisStack.getSize();
 
-    Cell cell = getCell(ref);
     thisStack.push(cell);
 
     while (current != thisStack.getSize()) {
 	Cell cell = deref(thisStack.pop());
 
 	switch (cell.getTag()) {
-	case Cell::CON:
-	    thisConstTable.printConstNoArity(out,
-	       reinterpret_cast<Con &>(cell).getConstRef()); break;
+	case Cell::CON: {
+	    ConstRef cref = reinterpret_cast<Con &>(cell).getConstRef();
+	    printIndent(out, state.addToColumn(thisConstTable.getConstLength(cref)));
+	    thisConstTable.printConstNoArity(out, cref);
+	    break;
+  	    }
 	case Cell::STR:
-	    printStruct(out, HeapRef(cell.getValue())); break;
-	case Cell::REF:
-	    printRef(out, cell); break;
+	    {
+	    if (state.getIndent() > 0 &&
+		state.willWrap(getStringLength(cell,
+					       state.willWrapOnLength()))) {
+		
+		state.newLine(out);
+	    }
+ 	    HeapRef href = toHeapRef(cell);
+	    ConstRef cref = const_cast<Heap *>(this)->pushArgs(href);
+	    size_t arity = thisConstTable.getConstArity(cref);
+	    printIndent(out, state.addToColumn(
+	       thisConstTable.getConstLength(cref)+((arity > 0) ? 1 : 0)));
+	    thisConstTable.printConstNoArity(out, cref);
+	    if (arity > 0) {
+		out << "(";
+		state.markColumn();
+		state.incrementIndent();
+	    }
+	    break;
+	    }
+	case Cell::REF: 
+	    {
+	     ConstRef cref = getRefName(cell);
+	     printIndent(out, state.addToColumn(
+		 thisConstTable.getConstLength(cref)));
+	     thisConstTable.printConstNoArity(out, cref);
+             break;
+    	    }
         case Cell::EXT:
 	    switch (cell.getExtTag()) {
 	    case Cell::EXT_END:
+		printIndent(out, state.addToColumn(1));
 		out << ")";
+		state.decrementIndent();
 		break;
 	    case Cell::EXT_COMMA:
+		printIndent(out, state.addToColumn(2));
 		out << ", ";
 		break;
 	    default:
+		printIndent(out, state.addToColumn(3));
 		out << "???";
 		break;
 	    }

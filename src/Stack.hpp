@@ -25,6 +25,11 @@ public:
 	return t;
     }
 
+    void trim(size_t newSize)
+    {
+	GrowingAllocator<T>::trim(newSize);
+    }
+
     size_t getSize() const
     {
 	size_t n = GrowingAllocator<T>::getSize();

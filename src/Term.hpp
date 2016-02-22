@@ -28,12 +28,12 @@ namespace PROJECT {
 //   <30 bits> [ConstIndex] 01   CON Constant
 //   <30 bits> [HeapIndex]  10   STR Structure (pointing at functor+arity)
 //   <30 bits> [..........] 11   EXT
-//   <24 bits> <3 bits>000  11   EXT INT32 (next word is a 32-bit int)
-//   num cells         001  11   EXT INT64 (next 2 words is a 64-bit int)
-//   following         010  11   EXT FLOAT (next word is a 32-bit float)
-//                     011  11   EXT DOUBLE (next 2 words is a 64-bit double)
-//                     100  11   EXT INT128 (next 4 words is a 128-bit int)
-//                     101  11   EXT ARRAY (next is an array. Immediate word
+//   <24 bits>      000000  11   EXT INT32 (next word is a 32-bit int)
+//   num cells      000001  11   EXT INT64 (next 2 words is a 64-bit int)
+//   following      000010  11   EXT FLOAT (next word is a 32-bit float)
+//                  000011  11   EXT DOUBLE (next 2 words is a 64-bit double)
+//                  000100  11   EXT INT128 (next 4 words is a 128-bit int)
+//                  000101  11   EXT ARRAY (next is an array. Immediate word
 //                                          is EXT for array type, then
 //                                          array size)
 //
@@ -173,6 +173,8 @@ public:
 
     const Char * getString() const { return thisString; }
 
+    std::string asStdString() const;
+
     size_t getLength() const {
 	return thisLength;
     }
@@ -300,19 +302,44 @@ public:
     void print(std::ostream &out) const;
     void printConst(std::ostream &out, const ConstRef &ref) const;
     void printConstNoArity(std::ostream &out, const ConstRef &ref) const;
+    size_t getConstLength(const ConstRef &ref) const;
+    ConstString getConstNameNoArity(const ConstRef &ref) const;
 
 private:
     mutable ConstPool thisPool;
     mutable ConstIndexing thisIndexing;
 };
 
+class PrintParam {
+public:
+    PrintParam(size_t maxWidth = 78)
+        : thisMaxWidth(maxWidth), thisIndentWidth(2), thisStartColumn(0) { }
+
+    size_t getStartColumn() const { return thisStartColumn; }
+    void setStartColumn(size_t start) { thisStartColumn = start; }
+
+    size_t getEndColumn() const { return thisStartColumn + thisMaxWidth; }
+
+    size_t getMaxWidth() const { return thisMaxWidth; }
+    void setMaxWidth(size_t maxWidth) { thisMaxWidth = maxWidth; }
+
+    size_t getIndentWidth() const { return thisIndentWidth; }
+    void setIndentWidth(size_t indentWidth) { thisIndentWidth = indentWidth;}
+
+private:
+    size_t thisMaxWidth;
+    size_t thisIndentWidth;
+    size_t thisStartColumn;
+};
+
+class PrintState;
 
 class Heap : public GrowingAllocator<Cell> {
 public:
     Heap(size_t capacity = 65536) : GrowingAllocator<Cell>(capacity) { }
 
-    ConstRef getConst(size_t ordinal);
-    ConstRef getConst(const char *name, size_t arity);
+    ConstRef getConst(size_t ordinal) const;
+    ConstRef getConst(const char *name, size_t arity) const;
 
     inline ConstRef addConst(const char *name, size_t arity)
     {
@@ -376,6 +403,11 @@ public:
 
     void printCell(std::ostream &out, Cell cell) const;
 
+    inline HeapRef toHeapRef(Cell cell) const
+    {
+	return HeapRef(cell.getValue());
+    }
+
     inline HeapRef first() const
     {
 	return HeapRef(1);
@@ -386,8 +418,12 @@ public:
 	return HeapRef(1+getSize());
     }
 
-    void print( std::ostream &out, HeapRef ref ) const;
-    std::string toString( HeapRef ref) const;
+    void print( std::ostream &out, Cell cell,
+		const PrintParam &param = PrintParam(78)) const;
+
+    void print( std::ostream &out, PrintState &state ) const;
+
+    std::string toString(Cell cell) const;
 
     // ---
 
@@ -398,10 +434,16 @@ public:
     std::string toRawString(HeapRef from, HeapRef to) const;
 
 private:
+    size_t getStringLength(Cell cell, size_t maximum) const;
+    size_t getStringLengthForStruct(Cell cell) const;
+    size_t getStringLengthForRef(Cell cell) const;
+
     void printTag(std::ostream &out, Cell cell) const;
     void printConst(std::ostream &out, Cell cell) const;
-    void printStruct(std::ostream &out, HeapRef href) const;
+    ConstRef pushArgs(HeapRef ref);
     void printRef(std::ostream &out, Cell cell) const;
+    ConstRef getRefName(Cell cell) const;
+    void printIndent(std::ostream &out, PrintState &state) const;
 
     ConstTable thisConstTable;
     mutable Stack<Cell> thisStack;
