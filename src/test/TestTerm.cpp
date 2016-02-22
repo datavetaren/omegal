@@ -205,6 +205,7 @@ void testBigTerm()
     }
 
     if (!err) {
+	std::cout << str;
 	std::cout << "OK\n";
     }
 
