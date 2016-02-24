@@ -14,8 +14,6 @@ void testConst()
     ConstRef c2 = table.addConst("kula", 0);
     ConstRef c3 = table.addConst("testar", 1);
 
-    table.print(std::cout);
-
     ConstRef f1 = table.findConst("kalle", 3);
     assert(f1 == c1);
     ConstRef f2 = table.findConst("kula", 0);
@@ -25,6 +23,30 @@ void testConst()
 
     assert(table.findConst("xyzzy", 0) == ConstRef());
     assert(table.findConst("testar", 2) == ConstRef());
+
+    {
+	ConstRef f4 = table.getConst("A", 0);
+	std::stringstream ss;
+	table.printConst(ss, f4);
+	assert(ss.str() ==  "'A'");
+    }
+
+    {
+	ConstRef f5 = table.getConst("x(", 0);
+	std::stringstream ss;
+	table.printConst(ss, f5);
+	assert(ss.str() ==  "'x('");
+    }
+
+    {
+	ConstRef f6 = table.getConst("x\\'y", 0);
+	std::stringstream ss;
+	table.printConst(ss, f6);
+	std::cout << "HEJ: " << ss.str() << "\n";
+	assert(ss.str() ==  "'x\\\\\\'y'");
+    }
+
+    table.print(std::cout);
 }
 
 void testWAMBookFigure21()
@@ -63,13 +85,13 @@ void testWAMBookFigure21()
     assert(asList == "[STR:2, CON:h/2, REF:3, REF:4, STR:6, CON:f/1, REF:4, STR:9, CON:p/3, REF:3, STR:2, STR:6]");
 
     std::cout << "AS TERM: ";
-    heap.print(std::cout, heap.getCell(heap.first() + 7));
+    heap.print(std::cout, heap.first() + 7);
     std::cout << "\n";
 
     const std::string expected = "p(A, h(A, B), f(B))";
     std::cout << "EXPECTED: "<< expected << "\n";
 
-    std::string got = heap.toString(heap.getCell(heap.first() + 7));
+    std::string got = heap.toString(heap.first() + 7);
     std::cout << "GOT     : " << got << "\n";
 
     assert(expected == got);
@@ -84,20 +106,20 @@ static size_t myRand(size_t bound)
     return state % bound;
 }
 
-Cell newTerm(Heap &heap, size_t maxDepth, size_t depth = 0)
+HeapRef newTerm(Heap &heap, size_t maxDepth, size_t depth = 0)
 {
     size_t arity = (depth >= maxDepth) ? 0 : myRand(6);
     char functorName[2];
     functorName[0] = 'a' + (char)arity;
     functorName[1] = '\0';
     ConstRef functor = heap.getConst(functorName, arity);
-    Cell str = heap.newStr(heap.top()+1);
+    HeapRef str = heap.newStr(heap.top()+1);
     heap.newCon(functor);
     if (arity > 0) {
 	Cell *args = heap.allocate(arity);
 	for (size_t j = 0; j < arity; j++) {
-	    Cell arg = newTerm(heap, maxDepth, depth+1);
-	    args[j] = arg;
+	    HeapRef arg = newTerm(heap, maxDepth, depth+1);
+	    args[j] = heap.getCell(arg);
 	}
     }
     return str;
@@ -143,7 +165,7 @@ void testBigTerm()
 
     const size_t DEPTH = 5;
 
-    Cell term = newTerm(heap, DEPTH);
+    HeapRef term = newTerm(heap, DEPTH);
     PrintParam param;
     param.setMaxWidth(78-param.getStartColumn());
 
@@ -208,6 +230,10 @@ void testBigTerm()
 	std::cout << str;
 	std::cout << "OK\n";
     }
+    heap.printStatus(std::cout);
+    std::cout << "\n";
+
+    //    heap.printRoots(std::cout);
 
     assert(!err);
 }

@@ -7,6 +7,7 @@ using namespace PROJECT;
 
 void testBasic1()
 {
+    std::cout << "----- testBasic1() -----------------------\n";
     HashMap<int,int> map;
 
     map[3] = 100;
@@ -21,6 +22,7 @@ void testBasic1()
     map.put(77, 500);
     map.put(42, 600);
     map.put(659, 700);
+    map.checkRehash();
 
     std::cout << "Key 11 has value " << map[11] << "\n";
     assert(map[11] == *map.get(11));
@@ -84,6 +86,8 @@ int refGet(RefMap &map, int key)
 
 void testBasic2()
 {
+    std::cout << "----- testBasic2() -----------------------\n";
+
     HashMap<int,int> map;
     RefMap refMap;
 
@@ -91,6 +95,7 @@ void testBasic2()
 	map[i] = i*1000;
 	refPut(refMap, i, i*1000);
     }
+    map.checkRehash();
 
     map.printInternal(std::cout);
 

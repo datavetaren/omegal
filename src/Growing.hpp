@@ -35,8 +35,40 @@ public:
     {
 	thisCapacity = initialCapacity;
 	thisSize = 0;
-	thisBase = new T [thisCapacity+1];
+	thisBase = new T [thisCapacity];
 	thisData = &thisBase[1];
+	thisOldBase = NULL;
+    }
+
+    GrowingAllocator(const GrowingAllocator &other)
+    {
+	moveFrom(const_cast<GrowingAllocator &>(other));
+    }
+
+    ~GrowingAllocator()
+    {
+	delete [] thisBase;
+    }
+
+    void operator = (const GrowingAllocator &other)
+    {
+	moveFrom(const_cast<GrowingAllocator &>(other));
+    }
+
+    bool hasRebased() const
+    {
+	return thisOldBase != NULL;
+    }
+
+    void confirmRebased()
+    {
+	thisOldBase = NULL;
+    }
+
+    T* rebase(T *oldAddress) const
+    {
+	assert(thisOldBase != NULL);
+	return (oldAddress - thisOldBase) + thisBase;
     }
     
     inline size_t getNum(size_t bytes)
@@ -95,22 +127,43 @@ public:
 
     void grow(size_t num)
     {
-	while (thisSize + num > thisCapacity) {
+	size_t oldCapacity = thisCapacity;
+	while (thisSize + num > thisCapacity-1) {
 	    thisCapacity *= 2;
 	}
-	T *newBase = new T [thisCapacity+1];
+	T *newBase = new T [thisCapacity];
 	T *newData = &newBase[1];
 	memcpy(newData, thisData, sizeof(T)*thisSize);
+	memset(thisBase, 0, sizeof(T)*oldCapacity);
 	delete [] thisBase;
+	thisOldBase = thisBase;
 	thisBase = newBase;
 	thisData = newData;
     }
 
 private:
+    void moveFrom(GrowingAllocator &other)
+    {
+	if (thisBase != NULL) {
+	    delete [] thisBase;
+	}
+	thisCapacity = other.thisCapacity;
+	thisSize = other.thisSize;
+	thisBase = other.thisBase;
+	thisData = other.thisData;
+	thisOldBase = other.thisOldBase;
+	other.thisCapacity = 0;
+	other.thisSize = 0;
+	other.thisBase = NULL;
+	other.thisData = NULL;
+	other.thisOldBase = NULL;
+    }
+
     size_t thisCapacity;
     size_t thisSize;
     T *thisBase;
     T *thisData;
+    T *thisOldBase;
 };
 
 }

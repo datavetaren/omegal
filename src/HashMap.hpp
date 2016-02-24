@@ -4,6 +4,7 @@
 #include <iostream>
 #include <iterator>
 #include <type_traits>
+#include <assert.h>
 #include "basic.hpp"
 #include "Murmur3.hpp"
 #include "Growing.hpp"
@@ -79,6 +80,10 @@ public:
 
 
     const _V & getValue() const {
+	return thisValue;
+    }
+
+    _V & getValueRef() {
 	return thisValue;
     }
 
@@ -187,37 +192,57 @@ public:
     HashMap(size_t initialCapacity = 17, _Alloc allocator = _Alloc())
     {
 	thisAutoRehash = true;
+	thisNeedRehash = false;
 	thisNumRehash = 0;
 	thisNumCollisions = 0;
 	thisAllocator = allocator;
 	thisNumEntries = 0;
 	thisNumBuckets = initialCapacity;
 	thisBuckets = thisAllocator.allocate(thisNumBuckets);
+	thisAllocator.confirmRebased();
 	for (int i = 0; i < thisNumBuckets; i++) {
 	    thisBuckets[i] = 0;
 	}
     }
 
+    void checkRehash()
+    {
+	if (thisNeedRehash) {
+	    rehash(Primes::nextPrime(thisNumBuckets*2+1));
+	}
+    }
+
+    bool needRehash() const
+    {
+	return thisNeedRehash;
+    }
+
     const _V operator [] (const _K &k) const {
 	_E *prev = NULL;
 	size_t bucketIndex = 0;
-	_E *entry = const_cast<HashMap<_K,_V,_Alloc> *>(this)->findRef(k, false, prev, bucketIndex);
+	bool doNew = false;
+	_E *entry = const_cast<HashMap<_K,_V,_Alloc> *>(this)->findRef(k, doNew, prev, bucketIndex);
 	assert(entry != NULL);
 	return entry->getValue();
     }
 
     HashMapLValue<_K,_V> operator [] (const _K &k) {
+	checkRehash();
 	_E *prev = NULL;
 	size_t bucketIndex = 0;
-	return HashMapLValue<_K,_V>(findRef(k, true, prev, bucketIndex));
+	bool doNew = true;
+	HashMapLValue<_K,_V> r(findRef(k, doNew, prev, bucketIndex));
+	return r;
     }
 
     bool put(const _K &k, const _V &v)
     {
+	checkRehash();
 	int before = thisNumEntries;
 	_E *prev = NULL;
 	size_t bucketIndex = 0;
-	_E *entry = findRef(k, true, prev, bucketIndex);
+	bool doNew = true;
+	_E *entry = findRef(k, doNew, prev, bucketIndex);
 	entry->setValue(v);
 	return before != thisNumEntries;
     }
@@ -226,18 +251,34 @@ public:
     {
 	_E *prev = NULL;
 	size_t bucketIndex = 0;
-	_E *entry = const_cast<HashMap<_K,_V,_Alloc> *>(this)->findRef(k, false, prev, bucketIndex);
+	bool doNew = false;
+	_E *entry = const_cast<HashMap<_K,_V,_Alloc> *>(this)->findRef(k, doNew, prev, bucketIndex);
 	if (entry == NULL) {
 	    return NULL;
 	}
 	return &entry->getValue();
     }
 
-    bool remove(const _K &k)
+    _V & getRef(const _K &k, const _V &defaultVal)
     {
+	checkRehash();
 	_E *prev = NULL;
 	size_t bucketIndex = 0;
-	_E *entry = findRef(k, false, prev, bucketIndex);
+	bool doNew = true;
+	_E *entry = findRef(k, doNew, prev, bucketIndex);
+	if (doNew) {
+	    entry->setValue(defaultVal);
+	}
+	return entry->getValueRef();
+    }
+
+    bool remove(const _K &k)
+    {
+	checkRehash();
+	_E *prev = NULL;
+	size_t bucketIndex = 0;
+	bool doNew = false;
+	_E *entry = findRef(k, doNew, prev, bucketIndex);
 	if (entry == NULL) {
 	    return false;
 	}
@@ -262,6 +303,7 @@ public:
 	++thisNumRehash;
 
 	thisAutoRehash = false;
+	thisNeedRehash = false;
 	NativeType *oldBuckets = thisBuckets;
 	size_t oldNumBuckets = thisNumBuckets;
 	NativeType *newBuckets = thisAllocator.allocate(newNumBuckets);
@@ -272,9 +314,11 @@ public:
 
 	iterator_type itEnd = end();
 	for (iterator_type it = begin(); it != itEnd; ++it) {
+	    _K key = it->getKey();
+	    _V value = it->getValue();
 	    thisBuckets = newBuckets;
 	    thisNumBuckets = newNumBuckets;
-	    put(it->getKey(), it->getValue());
+	    put(key, value);
 	    thisBuckets = oldBuckets;
 	    thisNumBuckets = oldNumBuckets;
 	}
@@ -397,14 +441,16 @@ private:
 	return reinterpret_cast<_E *>(thisAllocator.toAbsolute(rel));
     }
 
-    _E * findRef(const _K &k, bool doNew, _E *&prev, size_t &bucketIndex) {
+    _E * findRef(const _K &k, bool &doNew, _E *&prev, size_t &bucketIndex) {
 	uint32_t index = HashOf<_K>::value(k) % thisNumBuckets;
 	bucketIndex = index;
 	_E *entry = getBucket(index);
         _E *pe = NULL;
+
 	while (entry != NULL) {
 	    if (entry->getKey() == k) {
 		prev = pe;
+		doNew = false;
 		return entry;
 	    }
 	    pe = entry;
@@ -424,17 +470,21 @@ private:
 	thisNumEntries++;
 
 	if (thisAutoRehash && thisNumEntries > thisNumBuckets / 2) {
-	    rehash(Primes::nextPrime(2*thisNumBuckets));
-	    return findRef(k, doNew, prev, bucketIndex);
+	    thisNeedRehash = true;
 	}
-
 	return newE;
     }
 
     _E * newEntry(const _K &key)
     {
+	bool oldRebased = thisAllocator.hasRebased();
+	(void)oldRebased;
 	_E *newEntry = reinterpret_cast<_E *>(thisAllocator.allocate(thisAllocator.getNum(sizeof(_E))));
         newEntry->init(key);
+	if (thisAllocator.hasRebased()) {
+	    thisBuckets = thisAllocator.rebase(thisBuckets);
+	    thisAllocator.confirmRebased();
+	}
         return newEntry;
     }
 
@@ -445,6 +495,7 @@ private:
     size_t thisNumRehash;
     size_t thisNumCollisions;
     bool thisAutoRehash;
+    bool thisNeedRehash;
 };
 
 template<typename _K, typename _V, typename _Alloc> HashMapIterator<_K, _V, _Alloc>::HashMapIterator(HashMap<typename remove_cv<_K>::type, typename remove_cv<_V>::type, _Alloc > *map, bool atEnd) : thisMap(map)

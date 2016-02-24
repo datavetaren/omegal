@@ -81,18 +81,56 @@ public:
 	return getIndex() >= other.getIndex();
     }
 
+    //    inline explicit operator NativeType () const { return thisIndex; }
 
 private:
    NativeType thisIndex;
 };
 
+class Heap;
+
+/*
+ * HeapRef. This class represent references to the heap. The heap
+ * is main area where cells live.
+ */
 class HeapRef : public Index {
 public:
-    inline HeapRef(NativeType index) : Index(index) { }
-    inline HeapRef operator + (int val) const { return HeapRef(getIndex()+val); }
-    inline HeapRef operator - (int val) const { return HeapRef(getIndex()-val); }
+    inline HeapRef() : Index(0), thisHeap((Heap *)NULL) { } 
+    inline HeapRef(Heap &heap, NativeType index);
+    inline HeapRef(const HeapRef &other);
+    inline ~HeapRef();
+    inline void operator = (const HeapRef &other);
+    inline HeapRef operator + (size_t val) const { return HeapRef(*thisHeap, getIndex()+val); }
+    inline HeapRef operator - (size_t val) const { return HeapRef(*thisHeap, getIndex()-val); }
+
+private:
+    Heap *thisHeap;
 };
 
+class IndexedHeapRef : public Index
+{
+public:
+    IndexedHeapRef(const HeapRef &href) : Index(href.getIndex()) { }
+
+    friend std::ostream & operator << (std::ostream &out, const IndexedHeapRef &r)
+    {
+	return out << r.getIndex();
+    }
+};
+
+
+
+template<> struct HashOf<IndexedHeapRef> {
+    static uint32_t value(const IndexedHeapRef &href) 
+    {
+	return href.getIndex();
+    }
+};
+
+/*
+ * ConstRef. This class represents references to constants. Constants
+ * live in their own area,
+ */
 class ConstRef : public Index {
 public:
     inline ConstRef() : Index(0) { }
@@ -101,6 +139,18 @@ public:
     friend std::ostream & operator << (std::ostream &out, const ConstRef &cr);
 };
 
+/*
+ * Cell. Yhis class is the main entity that lives on the heap.
+ * They represent different data structures depending on the tag.
+ * For simple cells (the most common ones) the tag are stored in the lower
+ * 2 bits. For more advanced cells, the lower 8 bits represent an extended
+ * tag, and the upper 24 bits contain auxillary information.
+ *
+ * This syetm is designed to use 32-bit cells to be space efficient
+ * despite the machine is a 64-bit architecture. We don't use absolute
+ * pointers, but relative ones. Yes, this limits the heap of being
+ * 1 GB Cells.
+ */
 class Cell {
 public:
     enum Tag { REF = 0, CON = 1, STR = 2, EXT = 3 };
@@ -108,6 +158,8 @@ public:
 
     inline Cell() : thisCell(0) { }
     inline Cell(Tag tag, NativeType value) : thisCell(((NativeType)tag) | value << 2) { }
+    inline Cell(Tag tag, HeapRef href) : thisCell(((NativeType)tag) | (href.getIndex()) << 2) { }
+    inline Cell(ConstRef cref) : thisCell((NativeType)CON | (cref.getIndex() << 2)) { }
     inline Cell(ExtTag tag, NativeType numCells)
         : thisCell((NativeType)tag | (numCells << 8)) { }
     inline Cell(NativeType rawValue) : thisCell(rawValue) { }
@@ -127,6 +179,7 @@ public:
     inline bool operator == (const Cell &other) const { return thisCell == other.thisCell; }
     inline bool operator != (const Cell &other) const { return thisCell != other.thisCell; }
 
+    inline ConstRef toConstRef() const { return ConstRef(getValue()); }
 
 private:
     NativeType thisCell;
@@ -137,33 +190,6 @@ template<> struct HashOf<Cell> {
     {
 	return cell.getRawValue();
     }
-};
-
-class Ref : public Cell {
-public:
-    inline HeapRef getHeapRef() const { return HeapRef(getValue()); }
-
-private:
-    friend class Heap;
-    inline Ref(HeapRef heapRef) : Cell( REF, heapRef.getIndex()) { }
-    inline Cell toCell() { return *this; }
-};
-
-class Con : public Cell {
-public:
-    inline ConstRef getConstRef() const { return ConstRef(getValue()); }
-private:
-    friend class Heap;
-    inline Con(ConstRef constRef) : Cell( CON, constRef.getIndex()) { }
-    inline Cell toCell() { return *this; }
-};
-
-class Str : public Cell {
-private:
-    friend class Heap;
-private:
-    inline Str(HeapRef heapRef) : Cell( STR, heapRef.getIndex()) { }
-    inline Cell toCell() { return *this; }
 };
 
 class ConstString {
@@ -259,23 +285,13 @@ public:
 
 class ConstTable;
 
-    /*
-class Const {
-public:
-    Const(const ConstTable &table, ConstRef ref)
-        : thisTable(table), thisRef(ref) { }
-
-    friend std::ostream & operator << (std::ostream &out, const Const &c);
-private:
-    const ConstTable &thisTable;
-    ConstRef thisRef;
-};
-    */
-
 class ConstTable : public GrowingAllocator<NativeType> {
 public:
     static const int INITIAL_CONST_POOL_SIZE = 65536;
     static const int INITIAL_CONST_TABLE_SIZE = 1024;
+    static const size_t MAX_CONST_LENGTH = 1024;
+
+    static const char RESERVED [];
 
     ConstTable() : GrowingAllocator<NativeType>(INITIAL_CONST_TABLE_SIZE),
 		   thisPool(INITIAL_CONST_POOL_SIZE),
@@ -283,13 +299,41 @@ public:
     {
     }
 
+    static bool isReserved(const Char ch) {
+	if (ch >= 256) {
+	    return false;
+	}
+	return isReserved(static_cast<const char>(ch));
+    }
+
+    static bool isReserved(const char ch) {
+	ensureReservedMap();
+	return RESERVED_MAP[(uint8_t)ch];
+    }
+
+    static void ensureReservedMap() {
+	if (!theInitialized) {
+	    theInitialized = true;
+	    for (size_t i = 0; i < sizeof(RESERVED_MAP); i++) {
+		RESERVED_MAP[i] = false;
+	    }
+	    for (size_t i = 0; RESERVED[i] != '\0'; i++) {
+		RESERVED_MAP[(uint8_t)RESERVED[i]] = true;
+	    }
+	}
+    }
+
     // Const getConst(ConstRef ref) const;
     ConstRef getConst(const char *name, size_t arity) const;
     ConstRef getConst(size_t ordinal) const;
-    void getConstName(char *name, size_t ordinal) const;
-
     ConstRef findConst(const char *name, size_t arity) const;
     ConstRef addConst(const char *name, size_t arity);
+
+    ConstRef getConstNoEscape(const char *name, size_t arity) const;
+    ConstRef findConstNoEscape(const char *name, size_t arity) const;
+    ConstRef addConstNoEscape(const char *name, size_t arity);
+
+    void getConstName(char *name, size_t ordinal) const;
 
     friend std::ostream & operator << (std::ostream &out, ConstTable &table)
     {
@@ -298,7 +342,6 @@ public:
     }
 
     size_t getConstArity(const ConstRef &ref) const;
-
     void print(std::ostream &out) const;
     void printConst(std::ostream &out, const ConstRef &ref) const;
     void printConstNoArity(std::ostream &out, const ConstRef &ref) const;
@@ -306,8 +349,12 @@ public:
     ConstString getConstNameNoArity(const ConstRef &ref) const;
 
 private:
+    static void escapeName(const char *str, char *escaped);
     mutable ConstPool thisPool;
     mutable ConstIndexing thisIndexing;
+
+    static bool RESERVED_MAP[256];
+    static bool theInitialized;
 };
 
 class PrintParam {
@@ -333,10 +380,12 @@ private:
 };
 
 class PrintState;
+class LocationTracker;
 
 class Heap : public GrowingAllocator<Cell> {
 public:
-    Heap(size_t capacity = 65536) : GrowingAllocator<Cell>(capacity) { }
+    Heap(size_t capacity = 65536)
+        : GrowingAllocator<Cell>(capacity), thisMaxNumRoots(0) { }
 
     ConstRef getConst(size_t ordinal) const;
     ConstRef getConst(const char *name, size_t arity) const;
@@ -364,36 +413,40 @@ public:
 	return cell;
     }
 
-    inline Ref newRef()
+    inline HeapRef newRef()
     {
-	Cell *cell = allocate(1);
-	Ref ref(toRelative(cell));
-	*cell = ref.toCell();
-	return ref;
+	Cell *cellPtr = allocate(1);
+	HeapRef href(*this, toRelative(cellPtr));
+	Cell cell(Cell::REF, href);
+	*cellPtr = cell;
+	return href;
     }
 
-    inline Ref newRef(HeapRef href)
+    inline HeapRef newRef(HeapRef href)
     {
-	Cell *cell = allocate(1);
-	Ref ref(href);
-	*cell = ref.toCell();
-	return ref;
+	Cell *cellPtr = allocate(1);
+	HeapRef newHref(*this, toRelative(cellPtr));
+	Cell cell(Cell::REF, href);
+	*cellPtr = cell;
+	return newHref;
     }
 
-    inline Con newCon(ConstRef constRef)
+    inline HeapRef newCon(ConstRef constRef)
     {
-	Cell *cell = allocate(1);
-	Con con(constRef);
-	*cell = con.toCell();
-	return con;
+	Cell *cellPtr = allocate(1);
+	HeapRef href(*this, toRelative(cellPtr));
+	Cell con(constRef);
+	*cellPtr = con;
+	return href;
     }
 
-    inline Str newStr(HeapRef ref)
+    inline HeapRef newStr(HeapRef strRef)
     {
-	Cell *cell = allocate(1);
-	Str str(ref.getIndex());
-	*cell = str.toCell();
-	return str;
+	Cell *cellPtr = allocate(1);
+	HeapRef href(*this, toRelative(cellPtr));
+	Cell str(Cell::STR, strRef);
+	*cellPtr = str;
+	return href;
     }
 
     inline Cell getCell(HeapRef ref) const
@@ -405,25 +458,25 @@ public:
 
     inline HeapRef toHeapRef(Cell cell) const
     {
-	return HeapRef(cell.getValue());
+	return HeapRef(const_cast<Heap &>(*this), cell.getValue());
     }
 
     inline HeapRef first() const
     {
-	return HeapRef(1);
+	return HeapRef(const_cast<Heap &>(*this), 1);
     }
 
     inline HeapRef top() const
     {
-	return HeapRef(1+getSize());
+	return HeapRef(const_cast<Heap &>(*this), 1+getSize());
     }
 
-    void print( std::ostream &out, Cell cell,
+    void print( std::ostream &out, HeapRef href,
 		const PrintParam &param = PrintParam(78)) const;
 
     void print( std::ostream &out, PrintState &state ) const;
 
-    std::string toString(Cell cell) const;
+    std::string toString(HeapRef href) const;
 
     // ---
 
@@ -432,6 +485,25 @@ public:
 
     std::string toRawString() const;
     std::string toRawString(HeapRef from, HeapRef to) const;
+
+    inline void addRoot(const HeapRef &href)
+    {
+     size_t &cnt = thisRoots.getRef(IndexedHeapRef(href),0); cnt++;
+     if (thisRoots.numEntries() > thisMaxNumRoots) {
+	 thisMaxNumRoots = thisRoots.numEntries();
+     }
+    }
+
+    inline void removeRoot(const HeapRef &href)
+    { size_t &cnt = thisRoots.getRef(IndexedHeapRef(href),0);
+      if (cnt > 0) {
+	  cnt--;
+	  if (cnt == 0) thisRoots.remove(IndexedHeapRef(href));
+      }
+    }
+
+    void printStatus(std::ostream &out) const;
+    void printRoots(std::ostream &out) const;
 
 private:
     size_t getStringLength(Cell cell, size_t maximum) const;
@@ -445,11 +517,45 @@ private:
     ConstRef getRefName(Cell cell) const;
     void printIndent(std::ostream &out, PrintState &state) const;
 
+    char parseSkipWhite( std::istream &in, LocationTracker &loc );
+    HeapRef parseConst( std::istream &in, char &lookahead,
+		     LocationTracker &loc );
+    HeapRef parse( std::istream &in, LocationTracker &loc );
+    HeapRef parseError(LocationTracker &loc);
+
     ConstTable thisConstTable;
     mutable Stack<Cell> thisStack;
     mutable HashMap<Cell, ConstRef> thisNameMap;
-    
+
+    HashMap<IndexedHeapRef, size_t> thisRoots;
+    size_t thisMaxNumRoots;
 };
+
+HeapRef::HeapRef(Heap &heap, NativeType index)
+   : Index(index), thisHeap(&heap)
+{
+    heap.addRoot(*this);
+}
+
+HeapRef::~HeapRef()
+{
+    if (thisHeap != NULL) {
+	thisHeap->removeRoot(*this);
+    }
+}
+
+HeapRef::HeapRef(const HeapRef &other) : Index(other), thisHeap(other.thisHeap)
+{
+    if (thisHeap != NULL) thisHeap->addRoot(*this);
+}
+
+void HeapRef::operator = (const HeapRef &other)
+{
+    if (thisHeap != NULL) thisHeap->removeRoot(*this);
+    setIndex(other.getIndex());
+    thisHeap = other.thisHeap;
+    if (thisHeap != NULL) thisHeap->addRoot(*this);
+}
 
 }
 
