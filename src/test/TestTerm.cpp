@@ -10,19 +10,17 @@ void testConst()
 
     ConstTable table;
 
-    ConstRef c1 = table.addConst("kalle", 3);
-    ConstRef c2 = table.addConst("kula", 0);
-    ConstRef c3 = table.addConst("testar", 1);
+    ConstRef c1 = table.getConst("kalle", 3);
+    ConstRef c2 = table.getConst("kula", 0);
+    ConstRef c3 = table.getConst("testar", 1);
 
-    ConstRef f1 = table.findConst("kalle", 3);
+    ConstRef f1 = table.getConst("kalle", 3);
     assert(f1 == c1);
-    ConstRef f2 = table.findConst("kula", 0);
+    ConstRef f2 = table.getConst("kula", 0);
     assert(f2 == c2);
-    ConstRef f3 = table.findConst("testar", 1);
+    ConstRef f3 = table.getConst("testar", 1);
     assert(f3 == c3);
 
-    assert(table.findConst("xyzzy", 0) == ConstRef());
-    assert(table.findConst("testar", 2) == ConstRef());
 
     {
 	ConstRef f4 = table.getConst("A", 0);
@@ -60,9 +58,9 @@ void testWAMBookFigure21()
 
     Heap heap;
 
-    ConstRef h2 = heap.addConst("h", 2);
-    ConstRef f1 = heap.addConst("f", 1);
-    ConstRef p3 = heap.addConst("p", 3);
+    ConstRef h2 = heap.getConst("h", 2);
+    ConstRef f1 = heap.getConst("f", 1);
+    ConstRef p3 = heap.getConst("p", 3);
 
     heap.newStr(heap.top() + 1);
     heap.newCon(h2);
@@ -238,11 +236,53 @@ void testBigTerm()
     assert(!err);
 }
 
+static void testParse(Heap &heap,
+		      const std::string &input,
+		      const std::string &expect)
+{
+    std::cout << "INPUT : " << input << "\n";
+    std::cout << "EXPECT: " << expect << "\n";
+
+    std::istringstream is(input);
+    is >> std::noskipws;
+    HeapRef hr = heap.parse(is);
+
+    std::string result = heap.toString(hr);
+
+    std::cout << "PARSED: " << result << "\n";
+
+    assert(result == expect);
+}
+
+void testParse()
+{
+    printf("-------- testParse() -----------------------\n");
+
+    Heap heap;
+
+    std::string input, expect;
+
+    std::cout << "Standard...\n";
+    input = "foo( bar( a, b), c, baz(blag(dd),xy),ef )";
+    expect = "foo(bar(a, b), c, baz(blag(dd), xy), ef)";
+    testParse(heap, input, expect);
+
+    std::cout << "Negative...\n";
+    input = "foo( bar( a, b), c, ";
+    expect = "$parseError('TERM ended too early', 0, 20)";
+    testParse(heap, input, expect);
+
+    input = "foo( bar(a, ), c)";
+    expect = "$parseError('Expecting TERM but got \\\')\\\'', 0, 12)";
+    testParse(heap, input, expect);
+}
+
 int main(int argc, char *argv[] )
 {
-    testConst();
-    testWAMBookFigure21();
-    testBigTerm();
+    //    testConst();
+    //    testWAMBookFigure21();
+    //    testBigTerm();
+    testParse();
 
     return 0;
 }

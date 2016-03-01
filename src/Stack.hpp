@@ -25,6 +25,13 @@ public:
 	return t;
     }
 
+    T peek(size_t rel)
+    {
+	size_t n = GrowingAllocator<T>::getSize();
+	T t = *GrowingAllocator<T>::toAbsolute(n-rel);
+	return t;
+    }
+
     void trim(size_t newSize)
     {
 	GrowingAllocator<T>::trim(newSize);

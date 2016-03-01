@@ -4,6 +4,7 @@
 #include <memory.h>
 #include <assert.h>
 #include "Stack.hpp"
+#include "Flags.hpp"
 
 namespace PROJECT {
 
@@ -13,6 +14,7 @@ public:
 
     void advance(const char ch)
     {
+	// std::cout << "ADVANCE: " << ch << "\n";
 	if (ch == '\n') {
 	    newLine();
 	} else {
@@ -134,20 +136,87 @@ std::ostream & operator << (std::ostream &out, const ConstRef &ref)
     return out;
 }
 
+const char ConstString::RESERVED[] = { '[', ']', '(', ')', ',', '.', '\\', '\'', ' ', '\0' };
+bool ConstString::RESERVED_MAP[256];
+bool ConstString::theInitialized = false;
+
+template<typename T> size_t ConstString::escapeName(const T *name, size_t len, char *escapedName)
+{
+    size_t i = 0, j = 0;
+    bool useQuotes = false;
+
+    if (len < 1) {
+	if (escapedName != NULL) escapedName[0] = '\0';
+	return 0;
+    }
+
+    if (name[0] >= 'A' && name[0] <= 'Z') {
+	useQuotes = true;
+    }
+    for (i = 0; i < len; i++) {
+	if (isReserved(name[i])) {
+	    useQuotes = true;
+	    break;
+	}
+    }
+    if (useQuotes) {
+	if (escapedName != NULL) escapedName[j] = '\'';
+	j++;
+    }
+    i = 0;
+    while (i < len) {
+	if (name[i] == '\\' || name[i] == '\'') {
+	    if (escapedName != NULL) escapedName[j] = '\\';
+	    j++;
+	}
+	if (escapedName != NULL) escapedName[j] = name[i];
+	j++;
+	i++;
+    }
+    if (useQuotes) {
+	if (escapedName != NULL) escapedName[j] = '\'';
+	j++;
+    }
+    if (escapedName != NULL) escapedName[j] = '\0';
+    return j;
+}
+
 std::ostream & operator << (std::ostream &out, const ConstString &str)
 {
     const Char *ch = str.getString();
     size_t n = str.getLength();
-    size_t arity = str.getArity();
-    for (size_t i = 0; i < n; i++) {
-	out << (char)ch[i];
+    char cstrStack[ConstTable::MAX_CONST_LENGTH];
+    char *cstr = &cstrStack[0];
+    size_t escapedLen = ConstString::escapeName(ch, n, NULL);
+    bool doAlloc = escapedLen > sizeof(cstrStack);
+
+    if (doAlloc) {
+	cstr = new char[escapedLen];
     }
-    if (arity > 0) {
-	out << "/";
-	out << arity;
+
+    ConstString::escapeName(ch, n, cstr);
+    
+    out << cstr;
+
+    if (doAlloc) {
+	delete [] cstr;
     }
     
     return out;
+}
+
+void ConstString::convert(const Char *src, size_t n, char *dst)
+{
+    for (size_t i = 0; i < n; i++) {
+	dst[i] = (char)src[i];
+    }
+}
+
+void ConstString::convert(const char *src, size_t n, Char *dst)
+{
+    for (size_t i = 0; i < n; i++) {
+	dst[i] = (Char)src[i];
+    }
 }
 
 std::string ConstString::asStdString() const
@@ -164,64 +233,36 @@ std::string ConstString::asStdString() const
     return ss.str();
 }
 
-const char ConstTable::RESERVED[] = { '[', ']', '(', ')', ',', '.', '\\', '\'', '\0' };
-bool ConstTable::RESERVED_MAP[256];
-bool ConstTable::theInitialized = false;
-
-void ConstTable::escapeName(const char *name, char *escapedName)
-{
-    size_t i = 0, j = 0;
-    bool useQuotes = false;
-    if (name[0] >= 'A' && name[0] <= 'Z') {
-	useQuotes = true;
-    }
-    for (i = 0; name[i] != '\0'; i++) {
-	if (isReserved(name[i])) {
-	    useQuotes = true;
-	    break;
-	}
-    }
-    if (useQuotes) {
-	escapedName[j++] = '\'';
-    }
-    i = 0;
-    while (name[i] != '\0') {
-	if (name[i] == '\\' || name[i] == '\'') {
-	    escapedName[j++] = '\\';
-	}
-	escapedName[j++] = name[i];
-	i++;
-    }
-    if (useQuotes) {
-	escapedName[j++] = '\'';
-    }
-    escapedName[j] = '\0';
-}
-
 ConstRef ConstTable::getConst(const char *name, size_t arity) const
 {
     assert(strlen(name) < MAX_CONST_LENGTH);
 
-    ConstRef cref = findConst(name, arity);
+    size_t nameLen = strlen(name);
+
+    ConstRef cref = findConst(name, nameLen, arity);
     if (cref == ConstRef()) {
-	char escapedName[MAX_CONST_LENGTH];
-	escapeName(name, escapedName);
-	return const_cast<ConstTable *>(this)->addConst(escapedName, arity);
+	return const_cast<ConstTable *>(this)->addConst(name, nameLen, arity);
     } else {
 	return cref;
     }
 }
 
-ConstRef ConstTable::getConstNoEscape(const char *name, size_t arity) const
+ConstRef ConstTable::getConst(ConstRef cref, size_t newArity) const
 {
-    assert(strlen(name) < MAX_CONST_LENGTH);
+    NativeType *c = toAbsolute(cref.getIndex());
+    NativeType name = c[0];
+    Char *data = thisPool.toAbsolute(name);
 
-    ConstRef cref = findConstNoEscape(name, arity);
-    if (cref == ConstRef()) {
-	return const_cast<ConstTable *>(this)->addConst(name, arity);
-    } else {
-	return cref;
+    Char *str = &data[2];
+    size_t len = (size_t)data[0];
+    // size_t oldArity = (size_t)data[1];
+
+    ConstRef newCref = findConst(str, len, newArity);
+    if (newCref != ConstRef()) {
+	return newCref;
     }
+
+    return const_cast<ConstTable *>(this)->addConst(str, len, newArity);
 }
 
 void ConstTable::getConstName(char *name, size_t ordinal) const
@@ -263,12 +304,12 @@ ConstRef ConstTable::getConst(size_t ordinal) const
 {
     char str[16];
     getConstName(str, ordinal);
-    return getConstNoEscape(str, 0);
+    return getConst(str, 0);
 }
 
-ConstRef ConstTable::addConst(const char *name, size_t arity)
+ConstRef ConstTable::addConst(const char *name, size_t nameLen, size_t arity)
 {
-    ConstString str = thisPool.addString(name, arity);
+    ConstString str = thisPool.addString(name, nameLen, arity);
     NativeType *cr = allocate(1);
     NativeType rel = static_cast<NativeType>(thisPool.toRelativePointer(str));
     *cr = rel;
@@ -277,32 +318,34 @@ ConstRef ConstTable::addConst(const char *name, size_t arity)
     return constRef;
 }
 
-ConstRef ConstTable::findConst(const char *name, size_t arity) const
+ConstRef ConstTable::addConst(const Char *name, size_t nameLen, size_t arity)
 {
-    assert(strlen(name) < MAX_CONST_LENGTH);
-
-    char escapedName[MAX_CONST_LENGTH];
-    escapeName(name, escapedName);
-
-    size_t n = strlen(escapedName);
-    Char chs[MAX_CONST_LENGTH];
-    for (size_t i = 0; i <= n; i++) {
-	chs[i] = (Char)escapedName[i];
-    }
-    ConstString str(chs, n, arity);
-    return thisIndexing.find(str);
+    ConstString str = thisPool.addString(name, nameLen, arity);
+    NativeType *cr = allocate(1);
+    NativeType rel = static_cast<NativeType>(thisPool.toRelativePointer(str));
+    *cr = rel;
+    ConstRef constRef(toRelative(cr));
+    thisIndexing.add(str, constRef);
+    return constRef;
 }
 
-ConstRef ConstTable::findConstNoEscape(const char *name, size_t arity) const
+ConstRef ConstTable::findConst(const char *name, size_t nameLen,
+			      size_t arity) const
 {
-    assert(strlen(name) < MAX_CONST_LENGTH);
+    assert(nameLen < MAX_CONST_LENGTH);
 
-    size_t n = strlen(name);
     Char chs[MAX_CONST_LENGTH];
-    for (size_t i = 0; i <= n; i++) {
+    for (size_t i = 0; i <= nameLen; i++) {
 	chs[i] = (Char)name[i];
     }
-    ConstString str(chs, n, arity);
+
+    return findConst(chs, nameLen, arity);
+}
+
+ConstRef ConstTable::findConst(const Char *name, size_t nameLen,
+			      size_t arity) const
+{
+    ConstString str(name, nameLen, arity);
     return thisIndexing.find(str);
 }
 
@@ -354,13 +397,26 @@ size_t ConstTable::getConstLength(const ConstRef &ref) const
     return static_cast<size_t>(data[0]);
 }
 
-ConstString ConstTable::getConstNameNoArity(const ConstRef &ref) const
+ConstString ConstTable::getConstName(const ConstRef &ref) const
 {
     NativeType *c = toAbsolute(ref.getIndex());
     NativeType name = c[0];
     Char *data = thisPool.toAbsolute(name);
     ConstString str(&data[2], (size_t)data[0], 0);
     return str;
+}
+
+Heap::Heap(size_t capacity)
+       : GrowingAllocator<Cell>(capacity), thisMaxNumRoots(0)
+{
+    Cell extComma(Cell::EXT_COMMA, 0);
+    Cell extEnd(Cell::EXT_END, 0);
+
+    thisExtComma = newCell(extComma);
+    thisExtEnd = newCell(extEnd);
+
+    thisStack.push(thisExtComma);
+    thisStack.push(thisExtEnd);
 }
 
 ConstRef Heap::getConst(const char *name, size_t arity) const
@@ -373,20 +429,25 @@ ConstRef Heap::getConst(size_t ordinal) const
     return thisConstTable.getConst(ordinal);
 }
 
+ConstRef Heap::getConst(ConstRef other, size_t newArity) const
+{
+    return thisConstTable.getConst(other, newArity);
+}
+
+ConstString Heap::getConstName(ConstRef cref) const
+{
+    return thisConstTable.getConstName(cref);
+}
+
 void Heap::printTag(std::ostream &out, Cell cell) const
 {
     switch (cell.getTag()) {
     case Cell::REF: out << "REF"; break;
     case Cell::CON: out << "CON"; break;
     case Cell::STR: out << "STR"; break;
+    case Cell::INT32: out << "INT32"; break;
     case Cell::EXT:
 	switch (cell.getExtTag()) {
-	case Cell::EXT_INT32: out << "INT32"; break;
-	case Cell::EXT_INT64: out << "INT64"; break;
-	case Cell::EXT_FLOAT: out << "FLOAT"; break;
-	case Cell::EXT_DOUBLE: out << "DOUBLE"; break;
-	case Cell::EXT_INT128: out << "INT128"; break;
-	case Cell::EXT_ARRAY: out << "ARRAY"; break;
 	default: out << "???"; break;
 	}
     }
@@ -406,7 +467,12 @@ void Heap::printCell(std::ostream &out, Cell cell) const
     case Cell::REF: out << cell.getValue(); break;
     case Cell::CON: printConst(out, cell); break;
     case Cell::STR: out << cell.getValue(); break;
-    case Cell::EXT: out << "???"; break;
+    case Cell::INT32: out << toInt32(cell); break;
+    case Cell::EXT:
+	switch (cell.getExtTag()) {
+	default:
+	    out << "???"; break;
+	}
     }
 }
 
@@ -445,21 +511,22 @@ std::string Heap::toRawString(HeapRef from, HeapRef to) const
     return ss.str();
 }
 
-size_t Heap::getStringLength(Cell cell, size_t maximum) const
+size_t Heap::getStringLength(HeapRef href, size_t maximum) const
 {
     size_t current = thisStack.getSize();
 
-    thisStack.push(cell);
+    thisStack.push(href);
 
     size_t len = 0;
 
     while (current != thisStack.getSize()) {
-	Cell cell = deref(thisStack.pop());
-
 	if (len >= maximum) {
 	    thisStack.trim(current);
 	    return maximum;
 	}
+
+	IHeapRef href1 = deref(thisStack.pop());
+	Cell cell = getCell(href1);
 
 	switch (cell.getTag()) {
 	case Cell::CON:
@@ -468,14 +535,14 @@ size_t Heap::getStringLength(Cell cell, size_t maximum) const
 	    len += getStringLengthForStruct(cell); break;
 	case Cell::REF:
 	    len += getStringLengthForRef(cell); break;
+	case Cell::INT32:
+	    len += getStringLengthForInt32(toInt32(cell)); break;
         case Cell::EXT:
 	    switch (cell.getExtTag()) {
 	    case Cell::EXT_END:
-		len++;
-		break;
+		len++; break;
 	    case Cell::EXT_COMMA:
-		len += 2;
-		break;
+		len += 2; break;
 	    default:
 		break;
 	    }
@@ -510,6 +577,22 @@ size_t Heap::getStringLengthForRef(Cell cell) const
     }
 }
 
+size_t Heap::getStringLengthForInt32(int32_t value) const
+{
+    if (value == 0) {
+	return 1;
+    }
+    size_t cnt = 0;
+    if (value < 0) {
+	cnt++;
+    }
+    while (value != 0) {
+	value /= 10;
+	cnt++;
+    }
+    return cnt;
+}
+
 std::string Heap::toString(HeapRef href) const
 {
     std::stringstream ss;
@@ -523,13 +606,12 @@ ConstRef Heap::pushArgs(HeapRef ref)
     ConstRef cref = cell.toConstRef();
     size_t arity = thisConstTable.getConstArity(cref);
     if (arity > 0) {
-	thisStack.push(Cell(Cell::EXT_END,0));
-	Cell listComma(Cell::EXT_COMMA,0);
+	thisStack.push(thisExtEnd);
 	for (size_t i = 0; i < arity; i++) {
 	    if (i > 0) {
-		thisStack.push(listComma);
+		thisStack.push(thisExtComma);
 	    }
-	    Cell arg = getCell(ref+arity-i);
+	    IHeapRef arg = ref+arity-i;
 	    thisStack.push(arg);
 	}
     }
@@ -562,12 +644,11 @@ void Heap::print(std::ostream &out, HeapRef href, const PrintParam &param) const
 
     size_t current = thisStack.getSize();
 
-    Cell cell = getCell(href);
-
-    thisStack.push(cell);
+    thisStack.push(href);
 
     while (current != thisStack.getSize()) {
-	Cell cell = deref(thisStack.pop());
+	IHeapRef dh = deref(thisStack.pop());
+	Cell cell = getCell(dh);
 
 	switch (cell.getTag()) {
 	case Cell::CON: {
@@ -576,10 +657,16 @@ void Heap::print(std::ostream &out, HeapRef href, const PrintParam &param) const
 	    thisConstTable.printConstNoArity(out, cref);
 	    break;
   	    }
+	case Cell::INT32: {
+	    printIndent(out, state.addToColumn(getStringLengthForInt32(
+					       toInt32(cell))));
+	    out << toInt32(cell);
+	    break;
+	    }
 	case Cell::STR:
 	    {
 	    if (state.getIndent() > 0 &&
-		state.willWrap(getStringLength(cell,
+		state.willWrap(getStringLength(href,
 					       state.willWrapOnLength()))) {
 		
 		state.newLine(out);
@@ -637,74 +724,281 @@ void Heap::printRoots(std::ostream &out) const
     thisRoots.print(out);
 }
 
-char Heap::parseSkipWhite(std::istream &in, LocationTracker &loc)
+void Heap::parseSkipWhite(std::istream &in, LocationTracker &loc)
 {
-    char ch;
-    do {
+    while (isspace(in.peek())) {
+	char ch;
 	in >> ch;
 	loc.advance(ch);
-    } while (isspace(ch));
-    return ch;
+    }
 }
 
-HeapRef Heap::parseConst(std::istream &in, char &ch, LocationTracker &loc)
+HeapRef Heap::parseConst(std::istream &in, LocationTracker &loc)
 {
     char constName[ConstTable::MAX_CONST_LENGTH];
     size_t i = 0;
 
+    char ch = (char)in.peek();
+    if (ch == EOF) {
+	return parseError(loc, "Expecting constant but got EOF");
+    }
+
     bool useQuotes = false;
     if (ch == '\'') {
 	useQuotes = true;
+	constName[i] = ch;
+	in >> ch;
+	loc.advance(ch);
+	i++;
     } else {
-	if (thisConstTable.isReserved(ch)) {
-	    return parseError(loc);
+	if (ConstString::isReserved(ch)) {
+	    std::string msg = "Character '";
+	    msg += ch;
+	    msg += "' is not allowed for constants. Use quotes to embed such characters.";
+	    return parseError(loc, msg);
 	}
     }
-    constName[i++] = ch;
+
     bool cont = true;
-    
-    do {
-	in >> ch;
-	constName[i++] = ch;
+
+    while (cont) {
+	ch = (char)in.peek();
 	if (ch == '\\') {
 	    if (useQuotes) {
 		in >> ch;
-		constName[i++] = ch;
+		loc.advance(ch);
+		in >> ch;
+		loc.advance(ch);
+		constName[i] = ch;
+		i++;
 	    } else {
 		cont = false;
 	    }
 	} else {
 	    if (useQuotes) {
 		if (ch == '\'') {
+		    in >> ch;
+		    loc.advance(ch);
 		    cont = false;
 		}
-		constName[i++] = ch;
 	    } else {
-		if (thisConstTable.isReserved(ch)) {
+		if (ConstString::isReserved(ch)) {
 		    cont = false;
+		} else {
+		    in >> ch;
+		    loc.advance(ch);
+		    constName[i] = ch;
+		    i++;
 		}
 	    }
 	}
-    } while (cont);
+    }
     constName[i] = '\0';
 
     ConstRef cref = getConst(constName, 0);
     return newCon(cref);
 }
 
-HeapRef Heap::parseError(LocationTracker &loc)
+bool Heap::parseCheck(int lookahead, Expect expect)
 {
-    (void)loc;
-    ConstRef cref = thisConstTable.getConstNoEscape("$parseError", 0);
-    return newCon(cref);
+    if (lookahead == ',' && (expect & COMMA)) {
+	return true;
+    }
+    if (lookahead == '(' && (expect & LPAREN)) {
+	return true;
+    }
+    if (lookahead == ')' && (expect & RPAREN)) {
+	return true;
+    }
+    if (expect & TERM) {
+	if (ConstString::isReserved((Char)lookahead)) {
+	    return false;
+	} else {
+	    return true;
+	}
+    }
+    return false;
+}
+
+void Heap::expectErrorToken(std::ostream &os,
+		            const char *token,
+			    bool isLast,
+			    bool &isFirst)
+{
+    if (!isFirst) {
+	os << ", ";
+    }
+    if (!isFirst && isLast) {
+	os << "or ";
+    }
+    isFirst = false;
+    os << token;
+}
+
+HeapRef Heap::expectError(LocationTracker &loc, int lookahead, Expect expect)
+{
+    Expect processed;
+
+    std::stringstream ss;
+    ss << "Expecting ";
+    bool first = true;
+
+    if (expect & LPAREN) {
+	processed = processed | LPAREN;
+	expectErrorToken(ss, "'('", expect == processed, first);
+    }
+
+    if (expect & RPAREN) {
+	processed = processed | RPAREN;
+	expectErrorToken(ss, "')'", expect == processed, first);
+    }
+
+    if (expect & COMMA) {
+	processed = processed | COMMA;
+	expectErrorToken(ss, "','", expect == processed, first);
+    }
+
+    if (expect & TERM) {
+	processed = processed | TERM;
+	expectErrorToken(ss, "TERM", expect == processed, first);
+    }
+
+    ss << " but got '" << ((char)lookahead) << "'";
+
+    return parseError(loc, ss.str());
+}
+
+HeapRef Heap::parseTerm(std::istream &in, LocationTracker &loc)
+{
+    size_t depth = 0;
+    Expect expect;
+
+    parseSkipWhite(in, loc);
+
+    HeapRef result;
+
+    HeapRef currentFunctor = parseConst(in, loc);
+    size_t current = thisStack.getSize();
+    thisStack.push(currentFunctor);
+
+    size_t currentArity = 0;
+
+    expect = LPAREN;
+
+    while (!in.eof() && result.isEmpty() && current != thisStack.getSize()) {
+	parseSkipWhite(in, loc);
+	int lookahead = in.peek();
+
+	if (!parseCheck(lookahead, expect)) {
+	    result = expectError(loc, lookahead, expect);
+	    break;
+	}
+
+	if (lookahead == '(') {
+	    char ch;
+	    in >> ch;
+	    loc.advance(ch);
+	    thisParseArity.push(currentArity);
+	    currentArity = 1;
+	    depth++;
+
+	    expect = TERM;
+	} else if (lookahead == ')') {
+	    char ch;
+	    in >> ch;
+	    loc.advance(ch);
+
+	    // On stack we now have:
+	    // [functor]
+	    // [arg n]
+	    // [arg n-1]
+	    // ...
+	    // [arg 0]
+	    //
+	    IHeapRef functorRef = thisStack.peek(currentArity);
+	    ConstRef functorCref = getCell(functorRef).toConstRef();
+
+	    // std::cout << "Manage functor: " << getConstName(functorCref) << " arity " << currentArity << "\n";
+
+	    ConstRef functor = getConst(functorCref, currentArity);
+	    HeapRef str = newStr(top()+1);
+	    HeapRef f = newCon(functor);
+	    for (size_t i = 0; i < currentArity; i++) {
+		IHeapRef arg = thisStack.peek(currentArity-1-i);
+		newCell(getCell(arg));
+	    }
+	    thisStack.trim(thisStack.getSize()-currentArity-1);
+
+	    // Is this the last item to process?
+	    if (current == thisStack.getSize()) {
+		result = str;
+	    } else {
+		thisStack.push(str);
+	    }
+
+	    expect = COMMA;
+
+	    // currentArity is the number of arguments on stack
+	    currentArity = thisParseArity.pop();
+	    depth--;
+
+	} else if (lookahead == ',') {
+	    char ch;
+	    in >> ch;
+	    loc.advance(ch);
+	    currentArity++;
+
+	    expect = TERM;
+	} else if ((lookahead >= 'A' && lookahead <= 'Z')
+		   || lookahead == '_') {
+	    // Variable
+	    expect = COMMA;
+	} else {
+	    // Expect term
+	    HeapRef newFunctor = parseConst(in, loc);
+	    thisStack.push(newFunctor);
+
+	    expect = LPAREN | COMMA | RPAREN;
+	}
+    }
+
+    // Remove any remaining garbage on stack
+    thisStack.trim(current);
+
+    if (result.isEmpty()) {
+	result = parseError(loc, "TERM ended too early");
+    }
+
+    return result;
+}
+
+HeapRef Heap::parseError(LocationTracker &loc, const std::string &reason)
+{
+    ConstRef cref = thisConstTable.getConst("$parseError", 3);
+    ConstRef creason = thisConstTable.getConst(reason.c_str(), 0);
+    std::stringstream lineStr;
+    HeapRef err = newStr(top() + 1);
+    newCon(cref);
+    newCon(creason);
+    HeapRef args = newArgs(2);
+    newInt32(args+0, loc.getLine());
+    newInt32(args+1, loc.getColumn());
+
+    return err;
 }
 
 HeapRef Heap::parse(std::istream &in, LocationTracker &loc)
 {
-    char ch = parseSkipWhite(in, loc);
-    HeapRef href = parseConst(in, ch, loc);
+    parseSkipWhite(in, loc);
+    HeapRef href = parseTerm(in, loc);
 
     return href;
+}
+
+HeapRef Heap::parse(std::istream &in)
+{
+    LocationTracker loc;
+    return parse(in, loc);
 }
 
 }
