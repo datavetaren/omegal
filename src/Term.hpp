@@ -206,7 +206,10 @@ template<> struct HashOf<Cell> {
 class ConstString {
 public:
     ConstString(const Char *str, size_t n, size_t arity)
-        : thisLength(n), thisArity(arity), thisString(str) { }
+        : thisLength(n), thisArity(arity), thisString(str), thisNoEscape(false) { }
+
+    bool isNoEscape() const { return thisNoEscape; }
+    void setNoEscape(bool noEscape) { thisNoEscape = noEscape; }
 
     static void convert(const char *src, size_t n, Char *dst);
     static void convert(const Char *src, size_t n, char *dst);
@@ -265,6 +268,7 @@ private:
     size_t thisLength;
     size_t thisArity;
     const Char *thisString;
+    bool thisNoEscape;
 
     static const char RESERVED [];
     static bool RESERVED_MAP[256];
@@ -363,6 +367,7 @@ public:
     void print(std::ostream &out) const;
     void printConst(std::ostream &out, const ConstRef &ref) const;
     void printConstNoArity(std::ostream &out, const ConstRef &ref) const;
+    void printConstNoEscape(std::ostream &out, const ConstRef &ref) const;
     size_t getConstLength(const ConstRef &ref) const;
     ConstString getConstName(const ConstRef &ref) const;
 
@@ -569,7 +574,7 @@ public:
     void printRoots(std::ostream &out) const;
 
 private:
-    size_t getStringLength(HeapRef href, size_t maximum) const;
+    size_t getStringLength(IHeapRef href, size_t maximum) const;
     size_t getStringLengthForStruct(Cell cell) const;
     size_t getStringLengthForRef(Cell cell) const;
     size_t getStringLengthForInt32(int32_t value) const;

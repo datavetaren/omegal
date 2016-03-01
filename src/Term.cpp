@@ -187,14 +187,19 @@ std::ostream & operator << (std::ostream &out, const ConstString &str)
     size_t n = str.getLength();
     char cstrStack[ConstTable::MAX_CONST_LENGTH];
     char *cstr = &cstrStack[0];
-    size_t escapedLen = ConstString::escapeName(ch, n, NULL);
-    bool doAlloc = escapedLen > sizeof(cstrStack);
+
+    size_t len = str.isNoEscape() ? n : ConstString::escapeName(ch, n, NULL);
+    bool doAlloc = len > sizeof(cstrStack);
 
     if (doAlloc) {
-	cstr = new char[escapedLen];
+	cstr = new char[len];
     }
 
-    ConstString::escapeName(ch, n, cstr);
+    if (str.isNoEscape()) {
+	ConstString::convert(ch, n, cstr);
+    } else {
+	ConstString::escapeName(ch, n, cstr);
+    }
     
     out << cstr;
 
@@ -389,6 +394,16 @@ void ConstTable::printConstNoArity(std::ostream &out, const ConstRef &ref) const
     out << str;
 }
 
+void ConstTable::printConstNoEscape(std::ostream &out, const ConstRef &ref) const
+{
+    NativeType *c = toAbsolute(ref.getIndex());
+    NativeType name = c[0];
+    Char *data = thisPool.toAbsolute(name);
+    ConstString str(&data[2], (size_t)data[0], 0);
+    str.setNoEscape(true);
+    out << str;
+}
+
 size_t ConstTable::getConstLength(const ConstRef &ref) const
 {
     NativeType *c = toAbsolute(ref.getIndex());
@@ -448,6 +463,8 @@ void Heap::printTag(std::ostream &out, Cell cell) const
     case Cell::INT32: out << "INT32"; break;
     case Cell::EXT:
 	switch (cell.getExtTag()) {
+	case Cell::EXT_COMMA: out << "EXT_COMMA"; break;
+	case Cell::EXT_END: out << "EXT_END"; break;
 	default: out << "???"; break;
 	}
     }
@@ -470,6 +487,7 @@ void Heap::printCell(std::ostream &out, Cell cell) const
     case Cell::INT32: out << toInt32(cell); break;
     case Cell::EXT:
 	switch (cell.getExtTag()) {
+	case Cell::EXT_COMMA: case Cell::EXT_END: break;
 	default:
 	    out << "???"; break;
 	}
@@ -511,7 +529,7 @@ std::string Heap::toRawString(HeapRef from, HeapRef to) const
     return ss.str();
 }
 
-size_t Heap::getStringLength(HeapRef href, size_t maximum) const
+size_t Heap::getStringLength(IHeapRef href, size_t maximum) const
 {
     size_t current = thisStack.getSize();
 
@@ -666,7 +684,7 @@ void Heap::print(std::ostream &out, HeapRef href, const PrintParam &param) const
 	case Cell::STR:
 	    {
 	    if (state.getIndent() > 0 &&
-		state.willWrap(getStringLength(href,
+		state.willWrap(getStringLength(dh,
 					       state.willWrapOnLength()))) {
 		
 		state.newLine(out);
@@ -690,7 +708,7 @@ void Heap::print(std::ostream &out, HeapRef href, const PrintParam &param) const
 	     ConstRef cref = getRefName(cell);
 	     printIndent(out, state.addToColumn(
 		 thisConstTable.getConstLength(cref)));
-	     thisConstTable.printConstNoArity(out, cref);
+	     thisConstTable.printConstNoEscape(out, cref);
              break;
     	    }
         case Cell::EXT:

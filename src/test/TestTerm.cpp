@@ -62,34 +62,36 @@ void testWAMBookFigure21()
     ConstRef f1 = heap.getConst("f", 1);
     ConstRef p3 = heap.getConst("p", 3);
 
+    HeapRef origin = heap.top();
+
     heap.newStr(heap.top() + 1);
     heap.newCon(h2);
     heap.newRef();
     heap.newRef();
     heap.newStr(heap.top() + 1);
     heap.newCon(f1);
-    heap.newRef(heap.first() + 3);
+    heap.newRef(origin + 3);
     heap.newStr(heap.top() + 1);
     heap.newCon(p3);
-    heap.newRef(heap.first() + 2);
-    heap.newStr(heap.first() + 1);
-    heap.newStr(heap.first() + 5);
+    heap.newRef(origin + 2);
+    heap.newStr(origin + 1);
+    heap.newStr(origin + 5);
 
     heap.printRaw(std::cout);
 
-    std::string asList = heap.toRawString();
+    std::string asList = heap.toRawString(origin, heap.top()-1);
     std::cout << "AS LIST: " << asList << "\n";
 
-    assert(asList == "[STR:2, CON:h/2, REF:3, REF:4, STR:6, CON:f/1, REF:4, STR:9, CON:p/3, REF:3, STR:2, STR:6]");
+    assert(asList == "[STR:4, CON:h, REF:5, REF:6, STR:8, CON:f, REF:6, STR:11, CON:p, REF:5, STR:4, STR:8]");
 
-    std::cout << "AS TERM: ";
-    heap.print(std::cout, heap.first() + 7);
+    std::cout << "AS TERM : ";
+    heap.print(std::cout, origin + 7);
     std::cout << "\n";
 
     const std::string expected = "p(A, h(A, B), f(B))";
     std::cout << "EXPECTED: "<< expected << "\n";
 
-    std::string got = heap.toString(heap.first() + 7);
+    std::string got = heap.toString(origin + 7);
     std::cout << "GOT     : " << got << "\n";
 
     assert(expected == got);
@@ -279,9 +281,9 @@ void testParse()
 
 int main(int argc, char *argv[] )
 {
-    //    testConst();
-    //    testWAMBookFigure21();
-    //    testBigTerm();
+    testConst();
+    testWAMBookFigure21();
+    testBigTerm();
     testParse();
 
     return 0;
