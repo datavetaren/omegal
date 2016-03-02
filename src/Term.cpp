@@ -954,7 +954,7 @@ HeapRef Heap::parseTerm(std::istream &in, LocationTracker &loc)
 		thisStack.push(str);
 	    }
 
-	    expect = COMMA;
+	    expect = COMMA | RPAREN;
 
 	    // currentArity is the number of arguments on stack
 	    currentArity = thisParseArity.pop();

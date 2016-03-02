@@ -100,6 +100,11 @@ void testWAMBookFigure21()
 static size_t myRand(size_t bound)
 {
     static size_t state = 4711;
+
+    if (bound == 0) {
+	state = 4711;
+	return 0;
+    }
     
     state = 13*state + 734672631;
 
@@ -279,12 +284,59 @@ void testParse()
     testParse(heap, input, expect);
 }
 
+void testParseBigTerm()
+{
+    printf("-------- testParseBigTerm() ----------------\n");
+
+    const size_t DEPTH = 5;
+
+    myRand(0); // Reset random generator
+
+    // First create big term (same as before)
+    Heap heap;
+
+    std::cout << "Create big term...\n";
+    HeapRef term = newTerm(heap, DEPTH);
+
+    // Print it to a string
+    std::cout << "Print term to a string...\n";
+    PrintParam param;
+    param.setMaxWidth(78-param.getStartColumn());
+    std::stringstream ss;
+    ss << std::noskipws;
+    heap.print(ss, term, param);
+    ss << "\n";
+
+    // Now parse it
+    std::cout << "Parse it...\n";
+    std::istringstream is(ss.str());
+    is >> std::noskipws;
+    HeapRef parsed = heap.parse(is);
+
+    // Print it again to a string
+    std::cout << "Print it again...\n";
+    std::stringstream ss2;
+    ss2 << std::noskipws;
+    heap.print(ss2, parsed, param);
+    ss2 << "\n";
+
+    // ss and ss2 should be identical
+    std::cout << "Compare strings...\n";
+    if (ss.str() != ss2.str()) {
+	std::cout << "String are inequal!\n";
+	std::cout << "GOT:\n";
+	std::cout << ss2.str() << "\n";
+    }
+    assert(ss.str() == ss2.str());
+}
+
 int main(int argc, char *argv[] )
 {
     testConst();
     testWAMBookFigure21();
     testBigTerm();
     testParse();
+    testParseBigTerm();
 
     return 0;
 }
