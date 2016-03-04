@@ -99,7 +99,7 @@ void testWAMBookFigure21()
 
 static size_t myRand(size_t bound)
 {
-    static size_t state = 4711;
+    static uint64_t state = 4711;
 
     if (bound == 0) {
 	state = 4711;
