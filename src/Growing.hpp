@@ -115,7 +115,7 @@ public:
 
     inline void ensureCapacity(size_t num)
     {
-	if (thisSize + num > thisCapacity) {
+	if (thisSize + num > thisCapacity - 1) {
 	    grow(num);
 	}
     }
