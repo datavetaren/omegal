@@ -23,6 +23,7 @@ struct remove_cv {
 };
 
 typedef uint32_t NativeType;
+static const size_t NativeTypeBits = sizeof(NativeType)*8;
 
 typedef uint32_t Char;
 typedef std::basic_string<Char> String;

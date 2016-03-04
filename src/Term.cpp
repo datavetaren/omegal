@@ -189,10 +189,10 @@ std::ostream & operator << (std::ostream &out, const ConstString &str)
     char *cstr = &cstrStack[0];
 
     size_t len = str.isNoEscape() ? n : ConstString::escapeName(ch, n, NULL);
-    bool doAlloc = len > sizeof(cstrStack);
+    bool doAlloc = len > sizeof(cstrStack) - 1;
 
     if (doAlloc) {
-	cstr = new char[len];
+	cstr = new char[len+1];
     }
 
     if (str.isNoEscape()) {
@@ -215,6 +215,7 @@ void ConstString::convert(const Char *src, size_t n, char *dst)
     for (size_t i = 0; i < n; i++) {
 	dst[i] = (char)src[i];
     }
+    dst[n] = '\0';
 }
 
 void ConstString::convert(const char *src, size_t n, Char *dst)
