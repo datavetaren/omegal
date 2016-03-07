@@ -330,6 +330,161 @@ void testParseBigTerm()
     assert(ss.str() == ss2.str());
 }
 
+void testUnify1()
+{
+    printf("-------- testUnify1() ----------------------\n");
+
+    Heap heap;
+
+    std::istringstream is1("foo(X, Y, bar(X, Z))");
+    is1 >> std::noskipws;
+    std::istringstream is2("foo(A, B, bar(q, B))");
+    is2 >> std::noskipws;
+
+    HeapRef term1 = heap.parse(is1);
+    HeapRef term2 = heap.parse(is2);
+
+    std::cout << "Term 1: " << heap.toString(term1) << "\n";
+    std::cout << "Term 2: " << heap.toString(term2) << "\n";
+
+    std::cout << "Unify : " << heap.unify(term1, term2) << "\n";
+    std::string result1 = heap.toString(term1);
+    std::string result2 = heap.toString(term2);
+    std::cout << "Term 1: " << result1 << "\n";
+    std::cout << "Term 2: " << result2 << "\n";
+
+    assert(result1 == "foo(q, B, bar(q, B))");
+    assert(result1 == result2);
+}
+
+void testUnify2()
+{
+    printf("-------- testUnify2() ----------------------\n");
+
+    Heap heap;
+
+    std::istringstream is1("foo(X, Y, bar(gugga, Z))");
+    is1 >> std::noskipws;
+    std::istringstream is2("foo(A, B, bar(q, B))");
+    is2 >> std::noskipws;
+
+    HeapRef term1 = heap.parse(is1);
+    HeapRef term2 = heap.parse(is2);
+
+    std::cout << "Term 1: " << heap.toString(term1) << "\n";
+    std::cout << "Term 2: " << heap.toString(term2) << "\n";
+
+    size_t heapSz = heap.getSize();
+    size_t stackSz = heap.getStackSize();
+
+    std::cout << "HeapSz: " << heapSz << " StackSz: " << stackSz << "\n";
+
+    bool r = heap.unify(term1, term2);
+    std::cout << "Unify : " << r << "\n";
+
+    size_t heapSz1 = heap.getSize();
+    size_t stackSz1 = heap.getStackSize();
+    std::cout << "HeapSz: " << heapSz1 << " StackSz: " << stackSz1 << "\n";
+
+    assert(heapSz == heapSz1);
+    assert(stackSz == stackSz1);
+
+    assert(!r);
+
+    std::string result1 = heap.toString(term1);
+    std::string result2 = heap.toString(term2);
+    std::cout << "Term 1: " << result1 << "\n";
+    std::cout << "Term 2: " << result2 << "\n";
+
+    assert(result1 == "foo(A, B, bar(gugga, C))");
+    assert(result2 == "foo(D, E, bar(q, E))");
+}
+
+HeapRef generalizeTerm(Heap &heap, HeapRef term, int p)
+{
+    if (myRand(100) < p) {
+	return heap.newRef();
+    }
+
+    HeapRef href = heap.deref(term);
+    Cell c = heap.getCell(href);
+    if (c.getTag() == Cell::STR) {
+	HeapRef functorRef = heap.getFunctorRef(href);
+	HeapRef newFunctor = heap.newArgs(heap.getCell(functorRef));
+	size_t arity = heap.getArity(newFunctor);
+	for (size_t i = 0; i < arity; i++) {
+	    HeapRef newArg = generalizeTerm(heap,heap.getArgRef(functorRef,i),p);
+	    heap.setArg(newFunctor, i, heap.getCell(newArg));
+	}
+	return heap.newStr(newFunctor);
+    } else {
+	return term;
+    }
+}
+
+void testUnifyBig()
+{
+    printf("-------- testUnifyBig() --------------------\n");
+
+    const size_t DEPTH = 5;
+
+    myRand(0); // Reset random generator
+
+    // First create big term (same as before)
+    Heap heap;
+
+    std::cout << "Create big term...\n";
+    HeapRef term = newTerm(heap, DEPTH);
+
+    PrintParam param;
+    param.setMaxWidth(78-param.getStartColumn());
+
+    std::stringstream ss;
+    heap.print(ss, term, param);
+    std::cout << " TERM:\n";
+    std::cout << ss.str() << "\n";
+
+    std::cout << "GTERM:\n";
+    HeapRef gTerm = generalizeTerm(heap, term, 10);
+    std::stringstream ss2;
+    heap.print(ss2, gTerm, param);
+    std::cout << ss2.str() << "\n";
+
+    std::cout << "HTERM:\n";
+    HeapRef hTerm = generalizeTerm(heap, term, 10);
+    std::stringstream ss3;
+    heap.print(ss3, hTerm, param);
+    std::cout << ss3.str() << "\n";
+
+    // Let's unify all terms together. It must succeed!
+    std::cout << "Unify GTERM and HTERM\n";
+    assert(heap.unify(gTerm, hTerm));
+    std::cout << "GHTERM:\n";
+    std::stringstream ss4;
+    heap.print(ss4, gTerm, param);
+    std::cout << ss4.str() << "\n";
+    std::stringstream ss5;
+    heap.print(ss5, hTerm, param);
+    std::cout << ss5.str() << "\n";
+    assert(ss4.str() == ss5.str());
+
+    // And finally unify with original term
+    bool r;
+    std::cout << "Unify with TERM: " << (r = heap.unify(term, gTerm)) << "\n";
+    assert(r);
+
+    std::stringstream ss6;
+    heap.print(ss6, hTerm, param);
+    std::cout << ss6.str() << "\n";
+
+    // And we should be back to original term.
+    assert(ss.str() == ss6.str());
+
+    // Print heap status
+    heap.printStatus(std::cout);
+    std::cout << "\n";
+}
+
 int main(int argc, char *argv[] )
 {
     testConst();
@@ -337,6 +492,11 @@ int main(int argc, char *argv[] )
     testBigTerm();
     testParse();
     testParseBigTerm();
+    testUnify1();
+    // Run same test again, to ensure that clearing ref hash map works.
+    testUnify1();
+    testUnify2();
+    testUnifyBig();
 
     return 0;
 }

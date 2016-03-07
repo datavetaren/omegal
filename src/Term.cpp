@@ -648,6 +648,18 @@ ConstRef Heap::getRefName(Cell cell) const
     return *pcref;
 }
 
+IHeapRef Heap::getRef(ConstRef name) const
+{
+    const IHeapRef *ref = thisRefMap.get(name);
+    if (ref == NULL) {
+	IHeapRef href = const_cast<Heap *>(this)->newRef();
+	thisRefMap.put(name, href);
+	return href;
+    } else {
+	return *ref;
+    }
+}
+
 void Heap::printIndent(std::ostream &out, PrintState &state) const
 {
     if (state.needNewLine()) {
@@ -889,6 +901,8 @@ HeapRef Heap::expectError(LocationTracker &loc, int lookahead, Expect expect)
 
 HeapRef Heap::parseTerm(std::istream &in, LocationTracker &loc)
 {
+    thisRefMap.clear();
+
     size_t depth = 0;
     Expect expect;
 
@@ -970,8 +984,29 @@ HeapRef Heap::parseTerm(std::istream &in, LocationTracker &loc)
 	    expect = TERM;
 	} else if ((lookahead >= 'A' && lookahead <= 'Z')
 		   || lookahead == '_') {
+	    char varName[ConstTable::MAX_CONST_LENGTH];
+	    size_t index = 0;
 	    // Variable
-	    expect = COMMA;
+	    do {
+		char ch;
+		in >> ch;
+		loc.advance(ch);
+		varName[index] = ch;
+		index++;
+		if (index == ConstTable::MAX_CONST_LENGTH) {
+		    thisStack.trim(current);
+		    result = parseError(loc, "Variable name too long");
+		    return result;
+		}
+		lookahead = in.peek();
+	    } while (isalnum(lookahead) || lookahead == '_');
+
+	    varName[index] = '\0';
+	    ConstRef refName = getConst(varName, 0);
+	    IHeapRef ref = getRef(refName);
+	    thisStack.push(ref);
+
+	    expect = LPAREN | COMMA | RPAREN;
 	} else {
 	    // Expect term
 	    HeapRef newFunctor = parseConst(in, loc);
@@ -1018,6 +1053,137 @@ HeapRef Heap::parse(std::istream &in)
 {
     LocationTracker loc;
     return parse(in, loc);
+}
+
+void Heap::unbind(IHeapRef ref)
+{
+    setCell(ref, Cell(Cell::REF, ref));
+}
+
+void Heap::bind1(Cell a, Cell b)
+{
+    IHeapRef ha = toIHeapRef(a);
+    thisTrail.push(ha);
+    setCell(ha, b);
+}
+
+void Heap::bind(Cell a, Cell b)
+{
+    if (a.getTag() == Cell::REF && b.getTag() == Cell::REF) {
+	IHeapRef ha = toIHeapRef(a);
+	IHeapRef hb = toIHeapRef(b);
+	if (ha < hb) {
+	    bind1(b, a);
+	} else {
+	    bind1(a, b);
+	}
+    } else if (a.getTag() != Cell::REF) {
+	bind1(b, a);
+    } else {
+	bind1(a, b);
+    }
+}
+
+void Heap::pushState()
+{
+    State state;
+    state.thisHeapSize = getSize();
+    state.thisStackSize = getStackSize();
+    state.thisTrailSize = thisTrail.getSize();
+    thisStateStack.push(state);
+}
+
+void Heap::popState()
+{
+    State state = thisStateStack.pop();
+    while (thisTrail.getSize() != state.thisTrailSize) {
+	IHeapRef href = thisTrail.pop();
+	unbind(href);
+    }
+    trim(state.thisHeapSize);
+    thisStack.trim(state.thisStackSize);
+}
+
+void Heap::discardState()
+{
+    (void)thisStateStack.pop();
+}
+
+bool Heap::unify(HeapRef a, HeapRef b)
+{
+    pushState();
+
+    size_t stack0 = thisStack.getSize();
+
+    thisStack.push(a);
+    thisStack.push(b);
+
+    while (stack0 != thisStack.getSize()) {
+	IHeapRef rb = deref(thisStack.pop());
+	IHeapRef ra = deref(thisStack.pop());
+
+	Cell ca = getCell(ra);
+	Cell cb = getCell(rb);
+
+	bool isRefA = ca.getTag() == Cell::REF;
+	bool isRefB = cb.getTag() == Cell::REF;
+	if (isRefA || isRefB) {
+	    bind(ca, cb);
+	} else if (ca != cb) {
+	    if (ca.getTag() != cb.getTag()) {
+		// Different tags? Always fail...
+		popState();
+		return false;
+	    }
+	    switch (ca.getTag()) {
+	    case Cell::CON:
+		// Const must be inequal (otherwise ca == cb)
+		popState();
+		return false;
+	    case Cell::STR:
+		{
+		    IHeapRef sa = toIHeapRef(ca);
+		    IHeapRef sb = toIHeapRef(cb);
+		    ConstRef sca = getCell(sa).toConstRef();
+		    ConstRef scb = getCell(sb).toConstRef();
+		    if (sca != scb) {
+			popState();
+			return false;
+		    }
+		    size_t arity = thisConstTable.getConstArity(sca);
+		    for (size_t i = 0; i < arity; i++) {
+			IHeapRef argA = sa+arity-i;
+			IHeapRef argB = sb+arity-i;
+			thisStack.push(argA);
+			thisStack.push(argB);
+		    }
+		}
+		break;
+	    case Cell::INT32:
+		{
+		    if (toInt32(ca) != toInt32(cb)) {
+			popState();
+			return false;
+		    }
+		}
+		break;
+	    default:
+		{
+		    popState();
+		    return false;
+		}
+	    }
+	}
+    }
+
+    discardState();
+
+    return true;
+}
+
+size_t Heap::getStackSize() const
+{
+    return thisStack.getSize();
 }
 
 }

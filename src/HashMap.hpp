@@ -373,6 +373,19 @@ public:
 	return const_iterator(this, true);
     }
 
+    void clear() {
+	for (int i = 0; i < thisNumBuckets; i++) {
+	    _E *entry = getBucket(i);
+	    while (entry != NULL) {
+		_E *follow = getEntry(entry->getRest());
+		thisAllocator.deallocate(reinterpret_cast<NativeType *>(entry),
+					 (sizeof(_E)+sizeof(NativeType)+1)/sizeof(NativeType));
+		entry = follow;
+	    }
+	    setBucket(i, NULL);
+	}
+	thisNumEntries = 0;
+    }
 
     friend std::ostream & operator << (std::ostream &out, HashMap<_K, _V> &map)
     {

@@ -100,6 +100,10 @@ public:
 
     inline void operator = (const IHeapRef &other)
     { setIndex(other.getIndex()); }
+
+    inline IHeapRef operator + (size_t val) const { return IHeapRef(getIndex()+val); }
+    inline IHeapRef operator - (size_t val) const { return IHeapRef(getIndex()-val); }
+
 };
 
 class HeapRef : public IHeapRef
@@ -107,6 +111,7 @@ class HeapRef : public IHeapRef
 public:
     inline HeapRef() : thisHeap((Heap *)NULL) { } 
     inline HeapRef(Heap &heap, NativeType index);
+    inline HeapRef(Heap &heap, IHeapRef ihref);
     inline HeapRef(const HeapRef &other);
     inline ~HeapRef();
     inline void operator = (const HeapRef &other);
@@ -148,6 +153,13 @@ public:
     inline ConstRef(NativeType index) : Index(index) { }
 
     friend std::ostream & operator << (std::ostream &out, const ConstRef &cr);
+};
+
+template<> struct HashOf<ConstRef> {
+    static uint32_t value(const ConstRef &cref)
+    {
+	return cref.getIndex();
+    }
 };
 
 /*
@@ -429,6 +441,11 @@ public:
 	return href;
     }
 
+    inline HeapRef deref(HeapRef href) const
+    {
+	return HeapRef(const_cast<Heap &>(*this), deref((IHeapRef &)href));
+    }
+
     inline HeapRef newArgs(size_t numArgs)
     {
 	Cell *cellPtr = allocate(numArgs);
@@ -472,13 +489,18 @@ public:
 	return href;
     }
 
-    inline HeapRef newStr(HeapRef strRef, size_t numArgs)
+    inline HeapRef newArgs(Cell functor)
     {
+	size_t numArgs = thisConstTable.getConstArity(functor.toConstRef());
 	Cell *cellPtr = allocate(1+numArgs);
 	HeapRef href(*this, toRelative(cellPtr));
-	Cell str(Cell::STR, strRef);
-	*cellPtr = str;
+	*cellPtr = functor;
 	return href;
+    }
+
+    inline void setArg(HeapRef href, size_t index, Cell cell)
+    {
+	setCell(href+1+index, cell);
     }
 
     inline HeapRef newCell(Cell cell)
@@ -489,7 +511,7 @@ public:
 	return href;
     }
 
-    inline void setCell(HeapRef ref, Cell cell)
+    inline void setCell(IHeapRef ref, Cell cell)
     {
 	*toAbsolute(ref.getIndex()) = cell;
     }
@@ -509,6 +531,69 @@ public:
 	*cellPtr = Cell(static_cast<NativeType>(value));
 	setCell(atRef, Cell(Cell::INT32, href));
     }
+
+    inline ConstRef getConst(HeapRef atRef)
+    {
+	IHeapRef hr = deref(atRef);
+	Cell c = getCell(hr);
+	if (c.getTag() == Cell::STR) {
+	    c = getCell(toIHeapRef(c));
+	}
+	return c.toConstRef();
+    }
+
+    inline Cell getFunctor(HeapRef atRef)
+    {
+	return getCell(getFunctorRef(atRef));
+    }
+
+    inline HeapRef getFunctorRef(HeapRef atRef)
+    {
+	IHeapRef hr = deref(atRef);
+	Cell cell = getCell(hr);
+	switch (cell.getTag()) {
+	case Cell::CON: return HeapRef(*this, hr);
+	case Cell::STR: return HeapRef(*this, toIHeapRef(cell));
+	default: return HeapRef();
+	}
+    }
+
+    inline size_t getArity(HeapRef atRef)
+    {
+	IHeapRef hr = deref(atRef);
+	Cell cell = getCell(hr);
+	return getArity(cell);
+    }
+
+    inline size_t getArity(Cell cell)
+    {
+	if (cell.getTag() == Cell::STR) {
+	    cell = getCell(toIHeapRef(cell));
+	}
+	return thisConstTable.getConstArity(cell.toConstRef());
+    }
+
+    inline Cell getArg(HeapRef functorRef, size_t index)
+    {
+	IHeapRef hr = deref(functorRef);
+	Cell c = getCell(hr);
+	if (c.getTag() == Cell::STR) {
+	    hr = toIHeapRef(c);
+	}
+	return getCell(hr+index+1);
+    }
+
+    inline HeapRef getArgRef(HeapRef functorRef, size_t index)
+    {
+	HeapRef hr = deref(functorRef);
+	return hr+index+1;
+    }
+
+    // Unification
+    // Try to unify the two terms. Returns true if successful.
+    bool unify(HeapRef a, HeapRef b);
+
+    size_t getStackSize() const;
 
     inline Cell getCell(IHeapRef ref) const
     {
@@ -535,6 +620,16 @@ public:
     inline HeapRef top() const
     {
 	return HeapRef(const_cast<Heap &>(*this), 1+getSize());
+    }
+
+    inline void push(HeapRef term)
+    {
+	thisStack.push(term);
+    }
+
+    inline HeapRef pop()
+    {
+	return HeapRef(*this, thisStack.pop().getIndex());
     }
 
     void print( std::ostream &out, HeapRef href,
@@ -574,6 +669,11 @@ public:
     void printRoots(std::ostream &out) const;
 
 private:
+    inline IHeapRef toIHeapRef(Cell cell) const
+    {
+	return IHeapRef(cell.getValue());
+    }
+
     size_t getStringLength(IHeapRef href, size_t maximum) const;
     size_t getStringLengthForStruct(Cell cell) const;
     size_t getStringLengthForRef(Cell cell) const;
@@ -585,6 +685,7 @@ private:
     ConstRef pushArgs(HeapRef ref);
     void printRef(std::ostream &out, Cell cell) const;
     ConstRef getRefName(Cell cell) const;
+    IHeapRef getRef(ConstRef refName) const;
     void printIndent(std::ostream &out, PrintState &state) const;
 
     HeapRef parse( std::istream &in, LocationTracker &loc );
@@ -598,10 +699,27 @@ private:
     void expectErrorToken(std::ostream &out, const char *token,
 			  bool isLast, bool &isFirst );
 
+    void unbind(IHeapRef href);
+    void bind1(Cell a, Cell b);
+    void bind(Cell a, Cell b);
+
+    void pushState();
+    void popState();
+    void discardState();
+
+    struct State {
+	size_t thisHeapSize;
+	size_t thisStackSize;
+	size_t thisTrailSize;
+    };
+
     ConstTable thisConstTable;
     mutable Stack<IHeapRef> thisStack;
+    Stack<IHeapRef> thisTrail;
     mutable HashMap<Cell, ConstRef> thisNameMap;
+    mutable HashMap<ConstRef, IHeapRef> thisRefMap;
     Stack<size_t> thisParseArity;
+    Stack<State> thisStateStack;
 
     IHeapRef thisExtComma;
     IHeapRef thisExtEnd;
@@ -615,6 +733,13 @@ HeapRef::HeapRef(Heap &heap, NativeType index)
 {
     heap.addRoot(*this);
 }
+
+HeapRef::HeapRef(Heap &heap, IHeapRef ihref)
+    : IHeapRef(ihref), thisHeap(&heap)
+{
+    heap.addRoot(*this);
+}
+
 
 HeapRef::~HeapRef()
 {
