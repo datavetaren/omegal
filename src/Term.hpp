@@ -8,6 +8,7 @@
 #include <memory.h>
 #include <sstream>
 #include "Flags.hpp"
+#include "BitMap.hpp"
 
 namespace PROJECT {
 
@@ -41,6 +42,7 @@ public:
     Index(NativeType index) { thisIndex = index; }
 
     inline NativeType getIndex() const { return thisIndex; }
+    inline NativeType getValue() const { return thisIndex; }
     inline void setIndex(NativeType index) { thisIndex = index; }
 
     void operator ++ (int) {
@@ -93,6 +95,7 @@ class IHeapRef : public Index {
 public:
     inline IHeapRef() : Index(0) { } 
     inline IHeapRef(NativeType index) : Index(index) { }
+    inline IHeapRef(Index index) : Index(index) { }
     inline IHeapRef(const IHeapRef &other) : Index(other) { }
     inline ~IHeapRef() { }
 
@@ -418,7 +421,7 @@ private:
 class PrintState;
 class LocationTracker;
 
-class Heap : public GrowingAllocator<Cell> {
+class Heap {
 public:
     Heap(size_t capacity = 65536);
 
@@ -489,12 +492,12 @@ public:
 	return href;
     }
 
-    inline HeapRef newArgs(Cell functor)
+    inline HeapRef newArgs(ConstRef functor)
     {
-	size_t numArgs = thisConstTable.getConstArity(functor.toConstRef());
+	size_t numArgs = thisConstTable.getConstArity(functor);
 	Cell *cellPtr = allocate(1+numArgs);
 	HeapRef href(*this, toRelative(cellPtr));
-	*cellPtr = functor;
+	*cellPtr = Cell(functor);
 	return href;
     }
 
@@ -573,7 +576,7 @@ public:
 	return thisConstTable.getConstArity(cell.toConstRef());
     }
 
-    inline Cell getArg(HeapRef functorRef, size_t index)
+    inline Cell getArg(IHeapRef functorRef, size_t index)
     {
 	IHeapRef hr = deref(functorRef);
 	Cell c = getCell(hr);
@@ -588,6 +591,13 @@ public:
 	HeapRef hr = deref(functorRef);
 	return hr+index+1;
     }
+
+    inline IHeapRef getArgRef(IHeapRef functorRef, size_t index)
+    {
+	IHeapRef hr = deref(functorRef);
+	return hr+index+1;
+    }
+
 
     // Unification
     // Try to unify the two terms. Returns true if successful.
@@ -617,9 +627,14 @@ public:
 	return HeapRef(const_cast<Heap &>(*this), 1);
     }
 
+    inline size_t getHeapSize() const
+    {
+	return thisHeap.getSize();
+    }
+
     inline HeapRef top() const
     {
-	return HeapRef(const_cast<Heap &>(*this), 1+getSize());
+	return HeapRef(const_cast<Heap &>(*this), 1+getHeapSize());
     }
 
     inline void push(HeapRef term)
@@ -641,7 +656,18 @@ public:
 
     HeapRef parse( std::istream &in );
 
-    // ---
+    // ----------------------------------------------------------
+
+    void gc(size_t topSize = 0);
+
+private:
+
+    void findLive(size_t topSize);
+    void printLive(std::ostream &out, size_t topSize) const;
+
+public:
+
+    // ----------------------------------------------------------
 
     void printRaw( std::ostream &out ) const;
     void printRaw( std::ostream &out, HeapRef from, HeapRef to ) const;
@@ -665,13 +691,33 @@ public:
       }
     }
 
-    void printStatus(std::ostream &out) const;
+    void printStatus(std::ostream &out, int detail = 0) const;
     void printRoots(std::ostream &out) const;
 
 private:
     inline IHeapRef toIHeapRef(Cell cell) const
     {
 	return IHeapRef(cell.getValue());
+    }
+
+    inline Cell * allocate(size_t numCells)
+    {
+	return thisHeap.allocate(numCells);
+    }
+
+    inline size_t toRelative(Cell *cellPtr) const
+    {
+	return thisHeap.toRelative(cellPtr);
+    }
+
+    inline Cell * toAbsolute(size_t relative) const
+    {
+	return thisHeap.toAbsolute(relative);
+    }
+
+    inline void trim(size_t size)
+    {
+	thisHeap.trim(size);
     }
 
     size_t getStringLength(IHeapRef href, size_t maximum) const;
@@ -700,8 +746,16 @@ private:
 			  bool isLast, bool &isFirst );
 
     void unbind(IHeapRef href);
+
+    inline void bind2(IHeapRef ra, IHeapRef rb)
+    {
+	if (ra < rb) {
+	    thisForwardPointers.setBit(rb.getIndex(), true);
+	}
+    }
+
     void bind1(Cell a, Cell b);
-    void bind(Cell a, Cell b);
+    void bind(IHeapRef ra, IHeapRef rb);
 
     void pushState();
     void popState();
@@ -711,10 +765,15 @@ private:
 	size_t thisHeapSize;
 	size_t thisStackSize;
 	size_t thisTrailSize;
+	bool thisUseTrail;
     };
 
+    GrowingAllocator<Cell> thisHeap;
+    BitMap thisForwardPointers;
+    BitMap thisLive;
     ConstTable thisConstTable;
     mutable Stack<IHeapRef> thisStack;
+    bool thisUseTrail;
     Stack<IHeapRef> thisTrail;
     mutable HashMap<Cell, ConstRef> thisNameMap;
     mutable HashMap<ConstRef, IHeapRef> thisRefMap;
@@ -724,7 +783,8 @@ private:
     IHeapRef thisExtComma;
     IHeapRef thisExtEnd;
 
-    HashMap<IndexedHeapRef, size_t> thisRoots;
+    typedef HashMap<IndexedHeapRef, size_t> RootMap;
+    RootMap thisRoots;
     size_t thisMaxNumRoots;
 };
 

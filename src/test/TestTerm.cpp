@@ -118,15 +118,12 @@ HeapRef newTerm(Heap &heap, size_t maxDepth, size_t depth = 0)
     functorName[0] = 'a' + (char)arity;
     functorName[1] = '\0';
     ConstRef functor = heap.getConst(functorName, arity);
-    HeapRef str = heap.newStr(heap.top()+1);
-    heap.newCon(functor);
-    if (arity > 0) {
-	Cell *args = heap.allocate(arity);
-	for (size_t j = 0; j < arity; j++) {
-	    HeapRef arg = newTerm(heap, maxDepth, depth+1);
-	    args[j] = heap.getCell(arg);
-	}
+    HeapRef args = heap.newArgs(functor);
+    for (size_t j = 0; j < arity; j++) {
+	HeapRef arg = newTerm(heap, maxDepth, depth+1);
+	heap.setArg(args, j, heap.getCell(arg));
     }
+    HeapRef str = heap.newStr(args);
     return str;
 }
 
@@ -374,7 +371,7 @@ void testUnify2()
     std::cout << "Term 1: " << heap.toString(term1) << "\n";
     std::cout << "Term 2: " << heap.toString(term2) << "\n";
 
-    size_t heapSz = heap.getSize();
+    size_t heapSz = heap.getHeapSize();
     size_t stackSz = heap.getStackSize();
 
     std::cout << "HeapSz: " << heapSz << " StackSz: " << stackSz << "\n";
@@ -382,7 +379,7 @@ void testUnify2()
     bool r = heap.unify(term1, term2);
     std::cout << "Unify : " << r << "\n";
 
-    size_t heapSz1 = heap.getSize();
+    size_t heapSz1 = heap.getHeapSize();
     size_t stackSz1 = heap.getStackSize();
     std::cout << "HeapSz: " << heapSz1 << " StackSz: " << stackSz1 << "\n";
 
@@ -410,7 +407,7 @@ HeapRef generalizeTerm(Heap &heap, HeapRef term, int p)
     Cell c = heap.getCell(href);
     if (c.getTag() == Cell::STR) {
 	HeapRef functorRef = heap.getFunctorRef(href);
-	HeapRef newFunctor = heap.newArgs(heap.getCell(functorRef));
+	HeapRef newFunctor = heap.newArgs(heap.getCell(functorRef).toConstRef());
 	size_t arity = heap.getArity(newFunctor);
 	for (size_t i = 0; i < arity; i++) {
 	    HeapRef newArg = generalizeTerm(heap,heap.getArgRef(functorRef,i),p);
@@ -426,13 +423,16 @@ void testUnifyBig()
 {
     printf("-------- testUnifyBig() --------------------\n");
 
+    Heap heap;
+
+    HeapRef hTerm;
+
+    {
     const size_t DEPTH = 5;
 
     myRand(0); // Reset random generator
 
     // First create big term (same as before)
-    Heap heap;
-
     std::cout << "Create big term...\n";
     HeapRef term = newTerm(heap, DEPTH);
 
@@ -451,7 +451,7 @@ void testUnifyBig()
     std::cout << ss2.str() << "\n";
 
     std::cout << "HTERM:\n";
-    HeapRef hTerm = generalizeTerm(heap, term, 10);
+    hTerm = generalizeTerm(heap, term, 10);
     std::stringstream ss3;
     heap.print(ss3, hTerm, param);
     std::cout << ss3.str() << "\n";
@@ -479,10 +479,13 @@ void testUnifyBig()
 
     // And we should be back to original term.
     assert(ss.str() == ss6.str());
+    } // Only reference to hTerm should survive
 
     // Print heap status
-    heap.printStatus(std::cout);
+    heap.printStatus(std::cout, 1);
     std::cout << "\n";
+
+    heap.gc();
 }
 
 int main(int argc, char *argv[] )

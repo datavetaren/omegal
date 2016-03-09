@@ -423,7 +423,10 @@ ConstString ConstTable::getConstName(const ConstRef &ref) const
 }
 
 Heap::Heap(size_t capacity)
-       : GrowingAllocator<Cell>(capacity), thisMaxNumRoots(0)
+       : thisHeap(capacity),
+	 thisForwardPointers(capacity),
+	 thisLive(capacity),
+	 thisMaxNumRoots(0)
 {
     Cell extComma(Cell::EXT_COMMA, 0);
     Cell extEnd(Cell::EXT_END, 0);
@@ -433,6 +436,8 @@ Heap::Heap(size_t capacity)
 
     thisStack.push(thisExtComma);
     thisStack.push(thisExtEnd);
+
+    thisUseTrail = false;
 }
 
 ConstRef Heap::getConst(const char *name, size_t arity) const
@@ -745,9 +750,14 @@ void Heap::print(std::ostream &out, HeapRef href, const PrintParam &param) const
     }
 }
 
-void Heap::printStatus(std::ostream &out) const
+void Heap::printStatus(std::ostream &out, int detail) const
 {
-    out << "Heap{Size=" << getSize() << ",StackSize=" << thisStack.getSize() << ",RootsSize=" << thisRoots.numEntries() << ",MaxRootsSize=" << thisMaxNumRoots << "}";
+    out << "Heap{Size=" << getHeapSize() << ",StackSize=" << getStackSize() << ",RootsSize=" << thisRoots.numEntries() << ",MaxRootsSize=" << thisMaxNumRoots << "}\n";
+    if (detail > 0) {
+	out << "ForwardPointers: ";
+	thisForwardPointers.print(out);
+	out << "\n";
+    }
 }
 
 void Heap::printRoots(std::ostream &out) const
@@ -1063,12 +1073,14 @@ void Heap::unbind(IHeapRef ref)
 void Heap::bind1(Cell a, Cell b)
 {
     IHeapRef ha = toIHeapRef(a);
-    thisTrail.push(ha);
+    if (thisUseTrail) thisTrail.push(ha);
     setCell(ha, b);
 }
 
-void Heap::bind(Cell a, Cell b)
+void Heap::bind(IHeapRef ra, IHeapRef rb)
 {
+    Cell a = getCell(ra);
+    Cell b = getCell(rb);
     if (a.getTag() == Cell::REF && b.getTag() == Cell::REF) {
 	IHeapRef ha = toIHeapRef(a);
 	IHeapRef hb = toIHeapRef(b);
@@ -1079,17 +1091,20 @@ void Heap::bind(Cell a, Cell b)
 	}
     } else if (a.getTag() != Cell::REF) {
 	bind1(b, a);
+	bind2(rb, ra);
     } else {
 	bind1(a, b);
+	bind2(ra, rb);
     }
 }
 
 void Heap::pushState()
 {
     State state;
-    state.thisHeapSize = getSize();
+    state.thisHeapSize = getHeapSize();
     state.thisStackSize = getStackSize();
     state.thisTrailSize = thisTrail.getSize();
+    state.thisUseTrail = thisUseTrail;
     thisStateStack.push(state);
 }
 
@@ -1100,6 +1115,7 @@ void Heap::popState()
 	IHeapRef href = thisTrail.pop();
 	unbind(href);
     }
+    thisUseTrail = state.thisUseTrail;
     trim(state.thisHeapSize);
     thisStack.trim(state.thisStackSize);
 }
@@ -1113,6 +1129,11 @@ bool Heap::unify(HeapRef a, HeapRef b)
 {
     pushState();
 
+    // Remember all bidings so we can unbind if
+    // unification fails.
+    bool oldUseTrail = thisUseTrail;
+    thisUseTrail = true;
+
     size_t stack0 = thisStack.getSize();
 
     thisStack.push(a);
@@ -1122,13 +1143,17 @@ bool Heap::unify(HeapRef a, HeapRef b)
 	IHeapRef rb = deref(thisStack.pop());
 	IHeapRef ra = deref(thisStack.pop());
 
+	if (ra == rb) {
+	    continue;
+	}
+
 	Cell ca = getCell(ra);
 	Cell cb = getCell(rb);
 
 	bool isRefA = ca.getTag() == Cell::REF;
 	bool isRefB = cb.getTag() == Cell::REF;
 	if (isRefA || isRefB) {
-	    bind(ca, cb);
+	    bind(ra, rb);
 	} else if (ca != cb) {
 	    if (ca.getTag() != cb.getTag()) {
 		// Different tags? Always fail...
@@ -1178,12 +1203,144 @@ bool Heap::unify(HeapRef a, HeapRef b)
 
     discardState();
 
+    thisUseTrail = oldUseTrail;
+
     return true;
 }
 
 size_t Heap::getStackSize() const
 {
     return thisStack.getSize();
+}
+
+//
+// Algorithm for garbage collection.
+//
+// If topSize == 0, then we'll do a full GC, otherwise a partial GC
+// by only cosidering the top number of cells.
+//
+// For full GC we do:
+//   Find all live references starting with stack and root.
+
+void Heap::gc(size_t topSize)
+{
+    findLive(topSize);
+    printLive(std::cout, topSize);
+}
+
+void Heap::printLive(std::ostream &out, size_t topSize) const
+{
+    IHeapRef atStart = top();
+    IHeapRef atEnd = atStart;
+    if (topSize == 0 || topSize > getHeapSize()) {
+	topSize = getHeapSize();
+    }
+    atStart = atEnd - topSize;
+
+    out << "Live:[\n";
+    size_t col = 0;
+    size_t atEndIndex = atEnd.getIndex();
+    for (size_t i = atStart.getIndex(); i < atEndIndex; i += NativeTypeBits) {
+	size_t cnt = 0;
+	for (size_t j = 0; j < NativeTypeBits && i+j < atEndIndex; j++) {
+	    if (thisLive.hasBit(i+j)) {
+		cnt++;
+	    }
+	}
+	if (cnt == 0) out << " "; else out << "*";
+	if (++col == 70) {
+	    out << " |\n";
+	}
+    }
+    out << "]\n";
+}
+
+void Heap::findLive(size_t topSize)
+{
+    IHeapRef atStart = top();
+    IHeapRef atEnd = atStart;
+    if (topSize == 0 || topSize > getHeapSize()) {
+	topSize = getHeapSize();
+    }
+    atStart = atEnd - topSize;
+
+    // Push all roots on stack
+
+    // Push all stack entries
+    size_t stackSize = thisStack.getSize();
+    size_t offset = 0;
+    for (size_t i = 0; i < stackSize; i++) {
+	IHeapRef href = thisStack.peek(i+offset);
+	if (atStart <= href && href <= atEnd) {
+	    thisStack.push(href);
+	    offset++;
+	}
+    }
+
+    // Push all global roots
+    RootMap::iterator itEnd = thisRoots.end();
+    for (RootMap::iterator it = thisRoots.begin(); it != itEnd; ++it) {
+	IHeapRef href(it->getKey());
+	if (atStart <= href && href <= atEnd) {
+	    thisStack.push(href);
+	}
+    }
+
+    // Push all forward pointers
+    BitMap::iterator itEnd2 = thisForwardPointers.begin(true,atEnd.getIndex()+1);
+    for (BitMap::iterator it2 = thisForwardPointers.begin(true,atStart.getIndex());
+	 it2 != itEnd2;
+	 ++it2) {
+	IHeapRef href((NativeType)*it2);
+	thisStack.push(href);
+    }
+
+    thisLive.clear();
+    while (stackSize != thisStack.getSize()) {
+	IHeapRef href = thisStack.pop();
+	Index index = href.getIndex();
+	thisLive.setBit(index.getValue());
+	Cell cell = getCell(deref(href));
+	switch (cell.getTag()) {
+	case Cell::CON:
+	    // We'll mark the chunk as live
+	    {
+		size_t arity = getArity(cell);
+		thisLive.setBits(index.getValue()+1, index.getValue()+arity+1);
+		for (size_t i = 0; i < arity; i++) {
+		    IHeapRef arg = getArgRef(href, i);
+		    if (atStart <= arg && arg <= atEnd) {
+			thisStack.push(arg);
+		    }
+		}
+		break;
+	    }
+	case Cell::STR:
+	    {
+		IHeapRef follow = toIHeapRef(cell);
+		if (atStart <= follow && follow <= atEnd) {
+		    thisStack.push(follow);
+		}
+		break;
+	    }
+	case Cell::REF:
+	    // Already derefenced. Nothing to folow;
+	    break;
+	case Cell::INT32:
+	    {
+		IHeapRef int32Ref = toIHeapRef(cell);
+		// Do not push!
+		thisLive.setBit(int32Ref.getIndex());
+		break;
+	    }
+	case Cell::EXT:
+	    switch (cell.getExtTag()) {
+	    case Cell::EXT_COMMA:
+	    case Cell::EXT_END:
+		break;
+	    }
+	}
+    }
 }
 
 }

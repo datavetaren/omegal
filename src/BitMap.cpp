@@ -15,6 +15,11 @@ BitMap::~BitMap()
 {
 }
 
+void BitMap::clear()
+{
+    memset(thisData, 0, ((getSize()+NativeTypeBits-1)/NativeTypeBits)*sizeof(NativeType));
+}
+
 void BitMap::print(std::ostream &out) const
 {
     out << "[";
@@ -62,6 +67,73 @@ void BitMap::setBit(size_t index, bool value)
 	thisData[index/NativeTypeBits] |= (1 << (index % NativeTypeBits));
     } else {
 	thisData[index/NativeTypeBits] &= ~(1 << (index % NativeTypeBits));
+    }
+}
+
+void BitMap::setBits(size_t fromIndex, size_t toIndex, bool value)
+{
+    if (value) {
+	for (size_t i = fromIndex; i < toIndex;) {
+	    bool chunkProcessed = false;
+	    if (i % NativeTypeBits == 0) {
+		size_t chunk = i + NativeTypeBits;
+		if (chunk < toIndex) {
+		    thisData[i/NativeTypeBits] = (NativeType)-1;
+		    i += NativeTypeBits;
+		    chunkProcessed = true;
+		}
+	    }
+	    if (!chunkProcessed) {
+		thisData[i/NativeTypeBits] |= (1 << (i % NativeTypeBits));
+		i++;
+	    }
+	}
+    } else {
+	for (size_t i = fromIndex; i < toIndex;) {
+	    bool chunkProcessed = false;
+	    if (i % NativeTypeBits == 0) {
+		size_t chunk = i + NativeTypeBits;
+		if (chunk < toIndex) {
+		    thisData[i/NativeTypeBits] = 0;
+		    i += NativeTypeBits;
+		    chunkProcessed = true;
+		}
+	    }
+	    if (!chunkProcessed) {
+		thisData[i/NativeTypeBits] &= ~(1 << (i % NativeTypeBits));
+		i++;
+	    }
+	}
+    }
+}
+
+size_t BitMap::findBit(size_t fromIndex, size_t toIndex, bool value) const
+{
+    size_t fromWord = fromIndex / NativeTypeBits;
+    size_t toWord = (toIndex + NativeTypeBits - 1) / NativeTypeBits;
+
+    if (value) {
+	while (fromWord < toWord && thisData[fromWord] == 0) {
+	    fromWord++;
+	    fromIndex = fromWord * NativeTypeBits;
+	}
+	for (size_t i = fromIndex; i < toIndex; i++) {
+	    if (hasBit(i)) {
+		return i;
+	    }
+	}
+	return toIndex;
+    } else {
+	while (fromWord < toWord && thisData[fromWord] == (NativeType)-1) {
+	    fromWord++;
+	    fromIndex = fromWord * NativeTypeBits;
+	}
+	for (size_t i = fromIndex; i < toIndex; i++) {
+	    if (!hasBit(i)) {
+		return i;
+	    }
+	}
+	return toIndex;	
     }
 }
 
