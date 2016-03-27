@@ -10,121 +10,41 @@
 #include "Growing.hpp"
 #include "Primes.hpp"
 
+#include "HashComparator.hpp"
+#include "AbstractHashMapEntry.hpp"
+
 namespace PROJECT {
 
-static const uint32_t HASHMAP_SEED = 38136192;
-
-template<typename _K> struct HashOf {
-    static uint32_t value(const _K &other);
-};
-
-template<> struct HashOf<int32_t> {
-    static uint32_t value(const int32_t &k) { return Murmur3(&k, sizeof(k), HASHMAP_SEED); }
-};
-
-template<> struct HashOf<int64_t> {
-    static uint32_t value(const int64_t &k) { return Murmur3(&k, sizeof(k), HASHMAP_SEED); }
-};
-
-template<> struct HashOf<void *> {
-    static uint32_t value(const int64_t &k) { return Murmur3(&k, sizeof(k), HASHMAP_SEED); }
-};
-
-template<typename _K> class HashComparator {
+template<typename _K, typename _V> class HashMapEntry : public AbstractHashMapEntry<_K, _V> {
 public:
-    typedef _K key_type;
-    typedef uint32_t hash_t;
-
-    friend bool operator == (const _K &a, const _K &b)
-    {
-	return a == b;
-    }
-
-    static hash_t hash(const _K &k)
-    {
-	return HashOf<_K>::value(k);
-    }
-};
-
-
-template<typename _K, typename _V> class HashMapEntry {
-public:
-    typedef _K key_type;
-    typedef _V value_type;
-    typedef HashMapEntry<_K,_V> entry_type;
-
-    HashMapEntry(const _K &k)
-	: thisRest(0), thisKey(k) {
-    }
-
-    HashMapEntry(const _K &k, const _V &v) 
-       : thisRest(0), thisKey(k), thisValue(v) {
-    }
+    HashMapEntry() : AbstractHashMapEntry<_K,_V>(), thisRest(0) { }
+    HashMapEntry(const _K &k) : AbstractHashMapEntry<_K,_V>(k,_V()), thisRest(0) { }
+    HashMapEntry(const _K &k, const _V &v) : AbstractHashMapEntry<_K,_V>(k,v), thisRest(0) { }
 
     void init(const _K &k)
     {
+	AbstractHashMapEntry<_K,_V>::init(k);
 	thisRest = 0;
-	thisKey = k;
     }
 
     void init(const _K &k, const _V &v)
     {
+	AbstractHashMapEntry<_K,_V>::init(k,v);
 	thisRest = 0;
-	thisKey = k;
-	thisValue = v;
     }
 
-    const _K & getKey() const {
-	return thisKey;
-    }
-
-
-    const _V & getValue() const {
-	return thisValue;
-    }
-
-    _V & getValueRef() {
-	return thisValue;
-    }
-
-    void setValue(const _V &value) {
-	thisValue = value;
-    }
-
-    NativeType getRest() {
+    NativeType getRest() const
+    {
 	return thisRest;
     }
 
-    void setRest(NativeType rest) {
+    void setRest(NativeType rest)
+    {
 	thisRest = rest;
     }
 
 private:
     NativeType thisRest;
-    _K thisKey;
-    _V thisValue;
-};
-
-template<typename _K, typename _V> class HashMapLValue {
-public:
-    typedef _K key_type;
-    typedef _V value_type;
-
-    HashMapLValue(HashMapEntry<_K, _V> *entry)
-	: thisEntry(entry) { }
-
-    void operator = (const _V &v)
-    {
-	thisEntry->setValue(v);
-    }
-
-    operator _V () const
-    {
-	return thisEntry->getValue();
-    }
-
-private:
-    HashMapEntry<_K, _V> *thisEntry;
 };
 
 template<typename _K, typename _V, typename _Alloc> class HashMap;
@@ -163,6 +83,11 @@ public:
 	return HashMapIterator<const _K, const _V, _Alloc>(thisMap, thisBucket, thisCurrent);
     }
 
+    size_t getBucket() const
+    {
+	return thisBucket;
+    }
+
 private:
     void advance();
 
@@ -191,11 +116,16 @@ public:
 
     HashMap(size_t initialCapacity = 17, _Alloc allocator = _Alloc())
     {
+	thisAllocator = allocator;
+	init(initialCapacity);
+    }
+
+    void init(size_t initialCapacity)
+    {
 	thisAutoRehash = true;
 	thisNeedRehash = false;
 	thisNumRehash = 0;
 	thisNumCollisions = 0;
-	thisAllocator = allocator;
 	thisNumEntries = 0;
 	thisNumBuckets = initialCapacity;
 	thisBuckets = thisAllocator.allocate(thisNumBuckets);
@@ -437,6 +367,10 @@ public:
 	return cnt;
     }
 
+    _Alloc & getAllocator() {
+	return thisAllocator;
+    }
+
 private:
 
     _E * getBucket(size_t bucketIndex) const
@@ -493,7 +427,7 @@ private:
 	bool oldRebased = thisAllocator.hasRebased();
 	(void)oldRebased;
 	_E *newEntry = reinterpret_cast<_E *>(thisAllocator.allocate(thisAllocator.getNum(sizeof(_E))));
-        newEntry->init(key);
+	newEntry = new(newEntry) _E(key);
 	if (thisAllocator.hasRebased()) {
 	    thisBuckets = thisAllocator.rebase(thisBuckets);
 	    thisAllocator.confirmRebased();

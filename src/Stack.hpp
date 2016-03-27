@@ -25,10 +25,17 @@ public:
 	return t;
     }
 
-    T peek(size_t rel)
+    T peek(size_t rel = 0) const
     {
 	size_t n = GrowingAllocator<T>::getSize();
 	T t = *GrowingAllocator<T>::toAbsolute(n-rel);
+	return t;
+    }
+
+    T & peek(size_t rel = 0)
+    {
+	size_t n = GrowingAllocator<T>::getSize();
+	T &t = *GrowingAllocator<T>::toAbsolute(n-rel);
 	return t;
     }
 

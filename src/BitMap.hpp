@@ -64,10 +64,16 @@ public:
     void setBit(size_t index, bool value = true);
 
     // Set bits in the range fromIndex <= x < toIndex
+    void clearBits(size_t fromIndex, size_t toIndex);
     void setBits(size_t fromIndex, size_t toIndex, bool value = true);
+
+    bool isAllBits(size_t fromIndex, size_t toIndex, bool value = true) const;
     
     // Find next bit that is of value in the given interval
     size_t findBit(size_t fromIndex, size_t toIndex, bool value = true) const;
+
+    size_t findBits(size_t fromIndex, size_t toIndex, size_t len,
+		    bool value = true) const;
 
     // Iterate over set or cleared bits
     typedef BitMapIterator iterator;

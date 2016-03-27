@@ -70,6 +70,11 @@ void BitMap::setBit(size_t index, bool value)
     }
 }
 
+void BitMap::clearBits(size_t fromIndex, size_t toIndex)
+{
+    setBits(fromIndex, toIndex, false);
+}
+
 void BitMap::setBits(size_t fromIndex, size_t toIndex, bool value)
 {
     if (value) {
@@ -110,7 +115,7 @@ void BitMap::setBits(size_t fromIndex, size_t toIndex, bool value)
 size_t BitMap::findBit(size_t fromIndex, size_t toIndex, bool value) const
 {
     size_t fromWord = fromIndex / NativeTypeBits;
-    size_t toWord = (toIndex + NativeTypeBits - 1) / NativeTypeBits;
+    size_t toWord = toIndex / NativeTypeBits;
 
     if (value) {
 	while (fromWord < toWord && thisData[fromWord] == 0) {
@@ -135,6 +140,58 @@ size_t BitMap::findBit(size_t fromIndex, size_t toIndex, bool value) const
 	}
 	return toIndex;	
     }
+}
+
+bool BitMap::isAllBits(size_t fromIndex, size_t toIndex, bool value) const
+{
+    size_t fromWord = fromIndex / NativeTypeBits;
+    size_t toWord = toIndex / NativeTypeBits;
+    if (fromWord + 1 < toWord) {
+	NativeType checkVal = value ? (NativeType)-1 : 0;
+	for (size_t i = fromWord + 1; i < toWord; i++) {
+	    if (thisData[i] != checkVal) {
+		return false;
+	    }
+	}
+    }
+    size_t firstPart = (fromWord + 1) * NativeTypeBits;
+    if (firstPart > toIndex) firstPart = toIndex;
+
+    for (size_t i = fromIndex; i < firstPart; i++) {
+	if (hasBit(i) != value) {
+	    return false;
+	}
+    }
+    size_t lastPart = toWord * NativeTypeBits;
+    for (size_t i = lastPart; i < toIndex; i++) {
+	if (hasBit(i) != value) {
+	    return false;
+	}
+    }
+    return true;
+}
+
+size_t BitMap::findBits(size_t fromIndex, size_t toIndex, size_t len, bool value) const
+{
+    // This is a Boyer-Moore inspired search. Because its a binary alphabet
+    // it becomes much simpler.
+    for (size_t i = fromIndex; i < toIndex-len;) {
+	int j;
+	for (j = len - 1; j >= 0; j--) {
+	    if (hasBit(i+j) != value) {
+		// Mismatch found. Now jump past this point.
+		i += j+1;
+		break;
+	    }
+	}
+	if (j == -1) {
+	    // We've found a match!
+	    return i;
+	}
+    }
+
+    // We ran out of luck.
+    return toIndex;
 }
 
 }

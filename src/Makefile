@@ -92,7 +92,7 @@ $(BIN)/test/%$(EXE_EXT).ok : $(BIN)/test/%$(EXE_EXT)
 
 $(BIN)/test/%$(EXE_EXT).val.ok : $(BIN)/test/%$(EXE_EXT)
 	@$(call echon, $(yellow) $(bold) $<$(off)$(white)) 
-	@( valgrind --tool=memcheck $< >$<.val.log 2>&1) || ($(CP) $<.log /tmp/err.log; exit 1) || $(call printfile, /tmp/err.log)
+	@( valgrind --tool=memcheck --track-origins=yes $< >$<.val.log 2>&1) || ($(CP) $<.log /tmp/err.log; exit 1) || $(call printfile, /tmp/err.log)
 	@( ($(call checkval, $<.val.log)) || ($(call printfile, $<.val.log)))
 	@touch $@
 	@(echo $(green)$(bold) [OK]$(off)$(white))
