@@ -463,6 +463,9 @@ Heap::Heap(size_t capacity)
     thisStack.push(thisExtComma);
     thisStack.push(thisExtEnd);
 
+    thisDotFunctor = getConst(".", 2);
+    thisEmptyFunctor = getConst("[]", 0);
+
     thisUseTrail = false;
 }
 
@@ -539,6 +542,7 @@ void Heap::printTag(std::ostream &out, Cell cell) const
     case Cell::REF: out << "REF"; break;
     case Cell::CON: out << "CON"; break;
     case Cell::STR: out << "STR"; break;
+    case Cell::MAP: out << "MAP"; break;
     case Cell::INT32: out << "INT32"; break;
     case Cell::FWD: out << "FWD"; break;
     case Cell::EXT:
@@ -564,6 +568,7 @@ void Heap::printCell(std::ostream &out, Cell cell) const
     case Cell::REF: out << cell.getValue(); break;
     case Cell::CON: printConst(out, cell); break;
     case Cell::STR: out << cell.getValue(); break;
+    case Cell::MAP: out << cell.getValue(); break;
     case Cell::INT32: out << toInt32(cell); break;
     case Cell::FWD: out << "$fwd(" << cell.getValue() << ")"; break;
     case Cell::EXT:
@@ -635,6 +640,8 @@ size_t Heap::getStringLength(Cell cell, size_t maximum) const
 	    len += thisConstTable.getConstLength(cell.toConstRef()); break;
 	case Cell::STR:
 	    len += getStringLengthForStruct(cell); break;
+	case Cell::MAP:
+	    len += getStringLengthForMap(cell); break;
 	case Cell::REF:
 	    len += getStringLengthForRef(cell); break;
 	case Cell::INT32:
@@ -665,6 +672,17 @@ size_t Heap::getStringLengthForStruct(Cell cell) const
     if (arity > 0) {
 	len++;
     }
+    return len;
+}
+
+size_t Heap::getStringLengthForMap(Cell cell) const
+{
+    size_t len = 0;
+
+    // TODO: Traverse _all_ nodes of map and push _all_
+    // leaves. This will enable us for printing things like:
+    // { foo: bar, xyz: 42, ... }
+
     return len;
 }
 
@@ -808,6 +826,19 @@ void Heap::print(std::ostream &out, Cell cell, const PrintParam &param) const
 	    thisConstTable.printConstNoArity(out, cref);
 	    if (arity > 0) {
 		out << "(";
+		state.markColumn();
+		state.incrementIndent();
+	    }
+	    break;
+	    }
+	case Cell::MAP:
+	    {
+	    if (state.getIndent() > 0 &&
+		state.willWrap(getStringLength(cell,
+					       state.willWrapOnLength()))) {
+		
+		state.newLine(out);
+		out << "{";
 		state.markColumn();
 		state.incrementIndent();
 	    }
@@ -1579,6 +1610,11 @@ void Heap::findLive(size_t topSize)
 		}
 		break;
 	    }
+	case Cell::MAP:
+	    {
+	        assert("Cell::MAP To be implemented"==NULL);
+		break;
+	    }
 	case Cell::REF:
 	    {
 		if (isInRange(cell, atStart, atEnd)) {
@@ -1781,18 +1817,37 @@ void Heap::compactLive(size_t topSize, int verbosity)
 		HeapRef dst = toHeapRef(cell);
 		Cell dstCell = getCell0(dst);
 		size_t arity = getArity(dstCell);
-		size_t numCells = 1 + arity;
-		HeapRef newLoc = findFreeSlotBound(numCells, dst);
-		compactMove(dst, numCells, newLoc, verbosity);
-		if (!visited) {
+
+		bool strVisit = thisVisited.hasBit(dst.getIndex());
+
+		if (!strVisit) {
+		    thisVisited.setBit(dst.getIndex());
+
+		    // Push outer STR cell again to move itself
+		    // last (after arguments.) This way we don't
+		    // introduce new forward pointers.
+		    thisStackGC.push(cellPtr);
+
 		    for (size_t i = 0; i < arity; i++) {
-			HeapRef arg = getArgRef(newLoc, i);
+			HeapRef arg = getArgRef(dst, i);
 			if (atStart <= arg && arg < atEnd) {
 			    thisStackGC.push(toAbsolute(arg));
 			}
 		    }
+		    // thisVisited.setBit(toRelative(cellPtr));
+		} else {
+		    size_t numCells = 1 + arity;
+		    HeapRef newLoc = findFreeSlotBound(numCells, dst);
+		    compactMove(dst, numCells, newLoc, verbosity);
 		    *cellPtr = Cell(Cell::STR, newLoc);
 		}
+		break;
+	    }
+	case Cell::MAP:
+	    {
+		// Here we should treat the MAP as STR
+		// Just process one node and push its arguments.
+		assert("Cell::MAP to be implemented"==NULL);
 		break;
 	    }
 	case Cell::REF:
@@ -1806,14 +1861,26 @@ void Heap::compactLive(size_t topSize, int verbosity)
 	 	           thisForwardPointers.hasBit(toRelative(cellPtr));
 		HeapRef dst = toHeapRef(cell);
 		if (!isForwardPtr) {
-		    size_t numCells = 1;
-		    HeapRef newLoc = findFreeSlotBound(numCells, dst);
-		    compactMove(dst, numCells, newLoc, verbosity);
-		    if (dst != newLoc) {
-			*cellPtr = Cell(Cell::REF, newLoc);
+		    bool refVisit = thisVisited.hasBit(dst.getIndex());
+		    bool doMove = true;
+		    if (!refVisit) {
+			thisVisited.setBit(dst.getIndex());
+			// Push itself first followed by contents of REF cell
+			// This will process the object the REF cell is
+			// pointing to first, so we retain back pointers.
+			if (atStart <= dst && dst < atEnd) {
+			    thisStackGC.push(cellPtr);
+			    thisStackGC.push(toAbsolute(dst));
+			    doMove = false;
+			}
 		    }
-		    if (!visited && atStart <= newLoc && newLoc < atEnd) {
-			thisStackGC.push(toAbsolute(newLoc));
+		    if (doMove) {
+			size_t numCells = 1;
+			HeapRef newLoc = findFreeSlotBound(numCells, dst);
+			compactMove(dst, numCells, newLoc, verbosity);
+			if (dst != newLoc) {
+			    *cellPtr = Cell(Cell::REF, newLoc);
+			}
 		    }
 		} else {
 		    thisStackGC.push(toAbsolute(dst));
@@ -1822,6 +1889,7 @@ void Heap::compactLive(size_t topSize, int verbosity)
 	    }
 	case Cell::INT32:
 	    {
+		// Move up what INT32 cell is pointing at.
 		HeapRef dst = toHeapRef(cell);
 		if (thisVisited.hasBit(dst.getIndex())) {
 		    break;
@@ -1848,6 +1916,64 @@ void Heap::compactLive(size_t topSize, int verbosity)
 	    }
 	}
     }
+}
+
+CellRef Heap::newMap(size_t depth)
+{
+    Cell *cellPtr = allocate(2);
+    cellPtr[0] = depth;
+    cellPtr[1] = 0;
+    Cell strCell(Cell::MAP, toRelative(cellPtr));
+    return CellRef(*this, strCell);
+}
+
+CellRef Heap::getArg32(CellRef mapCell, size_t index)
+{
+    Cell mapCell0 = deref(*mapCell);
+    assert(mapCell0.getTag() == Cell::MAP);
+    HeapRef href = toHeapRef(mapCell0);
+    Cell *cellPtr = toAbsolute(href);
+    uint32_t mask = static_cast<uint32_t>(cellPtr[1].getRawValue());
+    if ((mask & (1 << index)) == 0) {
+	return CellRef(); // null
+    }
+    for (size_t i = 0, cnt = 0; i < 32; i++, mask >>= 1) {
+	if ((mask & 1) != 0) {
+	    if (index == i) {
+		return CellRef(*this, cellPtr[cnt]);
+	    }
+	    cnt++;
+	}
+    }
+    return CellRef();
+}
+
+CellRef Heap::setArg32(CellRef mapCell, size_t index, CellRef arg)
+{
+    // Check if we need to augment the cell chunk
+    Cell mapCell0 = deref(*mapCell);
+    assert(mapCell0.getTag() == Cell::MAP);
+    HeapRef href = toHeapRef(mapCell0);
+    Cell *cellPtr = toAbsolute(href);
+    uint32_t newMask = static_cast<uint32_t>(cellPtr[1].getRawValue())
+	               | (1 << index);
+    size_t numArgs = bitCount(newMask);
+    Cell *newCellPtr = allocate(2+numArgs);
+    newCellPtr[0] = cellPtr[0];
+    newCellPtr[1] = newMask;
+    for (size_t i = 0, cnt = 0, newCnt = 0; i < 32; i++, newMask >>= 1) {
+	if ((newMask & 1) != 0) {
+	    if (index == i) {
+		newCellPtr[newCnt] = *arg;
+	    } else {
+		newCellPtr[newCnt] = cellPtr[cnt];
+		cnt++;
+	    }
+	    newCnt++;
+	}
+    }
+    Cell newCell(Cell::MAP, toRelative(newCellPtr));
+    return CellRef(*this, newCell);
 }
 
 }

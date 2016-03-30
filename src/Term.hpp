@@ -180,7 +180,7 @@ template<> struct HashOf<ConstRef> {
  */
 class Cell {
 public:
-    enum Tag { REF = 0, CON = 1, STR = 2, INT32 = 3, FWD = 4, EXT = 7 };
+    enum Tag { REF = 0, CON = 1, STR = 2, MAP = 3, INT32 = 5, FWD = 6, EXT = 7 };
     enum ExtTag { EXT_COMMA = 7 + (1 << 3), 
 		  EXT_END = 7 + (2 << 3)
                 };
@@ -225,6 +225,7 @@ public:
 
     void operator = (const CellRef &other);
     inline const Cell & operator * () const { return thisCell; }
+    inline const Cell * operator -> () const { return &thisCell; }
 
 private:
     Heap *thisHeap;
@@ -528,33 +529,16 @@ public:
 	checkForwardPointer(href, cell);
     }
 
-    inline void checkForwardPointer(HeapRef href, Cell cell)
+    size_t bitCount(uint32_t w)
     {
-	switch (cell.getTag()) {
-	case Cell::CON:
-	case Cell::FWD:
-	    break;
-	case Cell::STR:
-	case Cell::REF:
-	case Cell::INT32:
-	    {
-		HeapRef dst = toHeapRef(cell);
-		if (dst > href) {
-		    createForwardPointer(href, dst);
-		}
-	    }
-	    break;
-	case Cell::EXT:
-	    break;
-	}
+	w = w - ((w >> 1) & 0x55555555);
+	w = (w & 0x33333333) + ((w >> 2) & 0x33333333);
+	return (((w + (w >> 4)) & 0x0F0F0F0F) * 0x01010101) >> 24;
     }
 
-    void createForwardPointer(HeapRef from, HeapRef to);
-
-    inline void setCell(HeapRef ref, Cell cell)
-    {
-	*toAbsolute(ref.getIndex()) = cell;
-    }
+    inline CellRef newMap(size_t depth);
+    CellRef setArg32(CellRef mapCell, size_t index, CellRef arg);
+    CellRef getArg32(CellRef mapCell, size_t index);
 
     inline CellRef newInt32(int32_t value)
     {
@@ -680,6 +664,35 @@ public:
     void gc(double percentage, int verbosity = 0);
 
 private:
+    inline void checkForwardPointer(HeapRef href, Cell cell)
+    {
+	switch (cell.getTag()) {
+	case Cell::CON:
+	case Cell::FWD:
+	    break;
+	case Cell::STR:
+	case Cell::REF:
+	case Cell::INT32:
+	case Cell::MAP:
+	    {
+		HeapRef dst = toHeapRef(cell);
+		if (dst > href) {
+		    createForwardPointer(href, dst);
+		}
+	    }
+	    break;
+	case Cell::EXT:
+	    break;
+	}
+    }
+
+    void createForwardPointer(HeapRef from, HeapRef to);
+
+    inline void setCell(HeapRef ref, Cell cell)
+    {
+	*toAbsolute(ref.getIndex()) = cell;
+    }
+
     void print( std::ostream &out, Cell cell,
 		const PrintParam &param = PrintParam(78)) const;
 
@@ -816,6 +829,7 @@ private:
 
     size_t getStringLength(Cell cell, size_t maximum) const;
     size_t getStringLengthForStruct(Cell cell) const;
+    size_t getStringLengthForMap(Cell cell) const;
     size_t getStringLengthForRef(Cell cell) const;
     size_t getStringLengthForInt32(int32_t value) const;
 
@@ -881,6 +895,10 @@ private:
     typedef OpenHashMap<IndexedCellPtr, Cell *> RootMap;
     RootMap thisGlobalRoots;
     size_t thisMaxNumGlobalRoots;
+
+    // $arg32 functors with arities 1 to 8
+    ConstRef thisDotFunctor;
+    ConstRef thisEmptyFunctor;
 };
 
 inline CellRef::CellRef() : thisHeap(NULL), thisCell()
