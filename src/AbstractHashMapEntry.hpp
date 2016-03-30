@@ -16,10 +16,15 @@ public:
     {
     }
 
-    static void * operator new (size_t sz, AbstractHashMapEntry<_K,_V> *p)
+    static void * operator new (size_t sz, AbstractHashMapEntry<_K,_V> *p) throw()
     {
 	(void)sz;
 	return reinterpret_cast<void *>(p);
+    }
+
+    static void operator delete(void *, AbstractHashMapEntry<_K,_V> *) throw()
+    {
+        // Don't do anything. Silence warnings.
     }
 
     AbstractHashMapEntry(const _K &k)

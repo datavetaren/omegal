@@ -1525,6 +1525,9 @@ bool Heap::isInRange(Cell cell, HeapRef atStart, HeapRef atEnd)
     case Cell::EXT:
 	assert("Heap::isInRange(): Cell::FWD/EXT unexpected here"==NULL);
 	return false;
+    default: // In case tag is invalid
+        assert("Heap::isInRange(): Cell invalid TAG"==NULL);
+        return false;
     }
 }
 

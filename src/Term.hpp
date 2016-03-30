@@ -629,6 +629,9 @@ public:
 	case Cell::CON:
 	case Cell::EXT:
 	    return false;
+	default: // In case tag is invalid
+	    assert("Heap::hasHeapRef(): Invalid TAG"==NULL);
+	    return false;
 	}
     }
 

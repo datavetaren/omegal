@@ -185,6 +185,7 @@ public:
 	    if (bucketIndex >= thisNumBuckets) bucketIndex = 0;
 	} while (bucketIndex != startIndex);
 	assert("Couldn't find entry in open hash table." == NULL);
+	return thisBuckets[bucketIndex].getValue();
     }
 
     const _V * get(const _K &k) const
