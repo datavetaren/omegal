@@ -104,6 +104,11 @@ public:
 	}
     }
 
+    inline bool isValid(const T *p) const
+    {
+	return p >= thisBase && p < &thisBase[thisCapacity];
+    }
+
     inline T * toAbsolute(size_t rel) const
     {
 	if (rel == 0) {

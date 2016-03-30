@@ -380,17 +380,31 @@ void ConstTable::printConst(std::ostream &out, const ConstRef &ref) const
 
 size_t ConstTable::getConstArity(const ConstRef &ref) const
 {
+    if (ref.isNull()) {
+	return 0;
+    }
     NativeType *c = toAbsolute(ref.getIndex());
     NativeType name = c[0];
     Char *data = thisPool.toAbsolute(name);
+    if (data == NULL) {
+	return 0;
+    }
     return (size_t)data[1];
 }
 
 void ConstTable::printConstNoArity(std::ostream &out, const ConstRef &ref) const
 {
+    if (ref.isNull()) {
+	out << "null";
+	return;
+    }
     NativeType *c = toAbsolute(ref.getIndex());
     NativeType name = c[0];
     Char *data = thisPool.toAbsolute(name);
+    if (data == NULL) {
+	out << "null";
+	return;
+    }
     ConstString str(&data[2], (size_t)data[0], 0);
     out << str;
 }
@@ -407,9 +421,15 @@ void ConstTable::printConstNoEscape(std::ostream &out, const ConstRef &ref) cons
 
 size_t ConstTable::getConstLength(const ConstRef &ref) const
 {
+    if (ref.isNull()) {
+	return 4; // "null"
+    }
     NativeType *c = toAbsolute(ref.getIndex());
     NativeType name = c[0];
     Char *data = thisPool.toAbsolute(name);
+    if (data == NULL) {
+	return 4; // "null";
+    }
     return static_cast<size_t>(data[0]);
 }
 
@@ -424,10 +444,10 @@ ConstString ConstTable::getConstName(const ConstRef &ref) const
 
 Heap::Heap(size_t capacity)
        : thisHeap(capacity),
+         thisIsStrict(false),
 	 thisForwardPointers(capacity),
 	 thisLive(capacity),
 	 thisVisited(capacity),
-	 thisMoved(capacity),
 	 thisNameMap(),
 	 thisRefMap(),
 	 thisGlobalRoots(capacity),
@@ -444,6 +464,18 @@ Heap::Heap(size_t capacity)
     thisStack.push(thisExtEnd);
 
     thisUseTrail = false;
+}
+
+// A strict heap clears the cells after compaction.
+// This is just for sanity/debugging while developing the (partial) GC.
+bool Heap::isStrict() const
+{
+    return thisIsStrict;
+}
+
+void Heap::setStrict(bool isStrict)
+{
+    thisIsStrict = isStrict;
 }
 
 void Heap::addGlobalRoot(Cell *cellPtr)
@@ -687,7 +719,8 @@ ConstRef Heap::pushArgs(Cell strCell)
 	    if (i > 0) {
 		thisStack.push(thisExtComma);
 	    }
-	    thisStack.push(getArg(strCell, arity-i-1));
+	    Cell arg = getArg(strCell, arity-i-1);
+	    thisStack.push(arg);
 	}
     }
     return getFunctor(strCell).toConstRef();
@@ -820,8 +853,20 @@ void Heap::printStatus(std::ostream &out, int detail) const
 {
     out << "Heap{Size=" << getHeapSize() << ",StackSize=" << getStackSize() << ",GlobalRootsSize=" << thisGlobalRoots.numEntries() << ",MaxNumGlobalRoots=" << thisMaxNumGlobalRoots << "}\n";
     if (detail > 0) {
+	bool first = true;
 	out << "ForwardPointers: ";
-	thisForwardPointers.print(out);
+	BitMap::iterator itEnd = const_cast<Heap *>(this)->thisForwardPointers.end();
+	for (BitMap::iterator it = const_cast<Heap *>(this)->thisForwardPointers.begin();
+	 it != itEnd;
+	 ++it) {
+	    if (!first) { out << ", "; }
+	    out << *it << ":";
+	    HeapRef href((NativeType)*it);
+	    printCell(out, getCell0(href));
+	    out << ":";
+	    printCell(out, getCell0(toHeapRef(getCell0(href))));
+	    first = false;
+	}
 	out << "\n";
     }
 }
@@ -1154,49 +1199,29 @@ void Heap::bind(Cell a, Cell b)
 	    bind1(a, b);
 	}
     } else if (a.getTag() != Cell::REF) {
-	bindCheckForward(b, a);
+	checkForwardPointer(toHeapRef(b), a);
 	bind1(b, a);
     } else {
-	bindCheckForward(a, b);
+	checkForwardPointer(toHeapRef(a), b);
 	bind1(a, b);
     }
 }
 
-// TODO:
-// The whole logic for this will be changed
-void Heap::bindCheckForward(Cell a, Cell b)
+void Heap::createForwardPointer(HeapRef from, HeapRef to)
 {
-    switch (b.getTag()) {
-    case Cell::STR:
-    case Cell::INT32:
-	{
-	    HeapRef ra = toHeapRef(a);
-	    HeapRef rb = toHeapRef(b);
-	    if (ra < ra) {
+    // Create a new backpointer to the source of this forward pointer
+    Cell *backPtr = allocate(1);
+    Cell cell(Cell::REF, from);
+    *backPtr = cell;
 
-		// thisForwardPointers.setBit(rb.getIndex());
-	    }
-	    break;
-	}
-    case Cell::CON:
-	// This must be a 0-arity constant. I don't want to
-	// do an assertion here on arity, because that would
-	// be slow.
-	break;
-    case Cell::FWD:
-    case Cell::REF:
-	assert("Cell::CON/FWD/REF not expected here." == NULL);
-	break;
-    case Cell::EXT:
-	assert("Cell::EXT not supported" == NULL);
-	break;
-    }
+    // Set a bit that we track a forward pointer at this location
+    thisForwardPointers.setBit(toRelative(backPtr));
 }
 
 void Heap::pushState()
 {
     State state;
-    state.thisHeapSize = getHeapSize();
+    state.thisHeapTop = topHeapRef();
     state.thisStackSize = getStackSize();
     state.thisTrailSize = thisTrail.getSize();
     state.thisUseTrail = thisUseTrail;
@@ -1211,7 +1236,7 @@ void Heap::popState()
 	unbind(cell);
     }
     thisUseTrail = state.thisUseTrail;
-    trim(state.thisHeapSize);
+    trim(state.thisHeapTop);
     thisStack.trim(state.thisStackSize);
 }
 
@@ -1314,23 +1339,31 @@ size_t Heap::getStackSize() const
 // For full GC we do:
 //   Find all live references starting with stack and root.
 
-void Heap::gc(size_t topSize)
+void Heap::gc(size_t windowSize, int verbosity)
 {
-    std::cout << "Heap::gc\n";
-    initiateGC(topSize);
-    findLive(topSize);
-    printLive(std::cout, topSize);
-    compactLive(topSize);
-    finalizeGC(topSize);
-    printLive(std::cout, topSize);
+    if (verbosity > 0) {
+	std::cout << "Heap::gc(): windowSize=" << windowSize << " verbosity=" << verbosity << " top=" << topHeapRef().getIndex() << "\n";
+
+    }
+    initiateGC(windowSize);
+    findLive(windowSize);
+    if (verbosity > 0) printLive(std::cout, windowSize);
+    compactLive(windowSize, verbosity);
+    HeapRef currentTop = topHeapRef();
+    finalizeGC(windowSize);
+    HeapRef afterTop = topHeapRef();
+    if (verbosity > 0) {
+	printLive(std::cout, windowSize);
+	size_t compacted = currentTop.getIndex() - afterTop.getIndex();
+	std::cout << "Heap::gc(): top=" << currentTop.getIndex() << " after=" << afterTop.getIndex() << " compacted=" << compacted << "\n";
+    }
 }
 
-void Heap::gc(double percentage)
+void Heap::gc(double percentage, int verbosity)
 {
     size_t heapSize = getHeapSize();
-    size_t topSize = (size_t)(percentage * heapSize);
-    std::cout << "TOP SIZE: " << topSize << "\n";
-    gc(topSize);
+    size_t windowSize = (size_t)(percentage * heapSize);
+    gc(windowSize, verbosity);
 }
 
 void Heap::printLive(std::ostream &out, size_t topSize) const
@@ -1364,7 +1397,7 @@ void Heap::pushRoots(HeapRef atStart, HeapRef atEnd, bool onGCStack)
 {
     size_t stackSize = thisStack.getSize();
 
-    std::cout << "AT START " << atStart.getIndex() << " " << atEnd.getIndex() << "\n";
+    // std::cout << "AT START " << atStart.getIndex() << " " << atEnd.getIndex() << "\n";
 
     // Push stack elements
     for (size_t i = 0; i < stackSize; i++) {
@@ -1378,7 +1411,7 @@ void Heap::pushRoots(HeapRef atStart, HeapRef atEnd, bool onGCStack)
 	}
     }
 
-    // Push all global roots
+    // Push all relevant global roots
     RootMap::iterator itEnd = thisGlobalRoots.end();
     for (RootMap::iterator it = thisGlobalRoots.begin(); it != itEnd; ++it) {
 	Cell *cellPtr = it->getValue();
@@ -1391,28 +1424,25 @@ void Heap::pushRoots(HeapRef atStart, HeapRef atEnd, bool onGCStack)
 	}
     }
 
-    /*
-    // Push all forward pointers
-    BitMap::iterator itEnd2 = thisForwardPointers.begin(true,atEnd.getIndex()+1);
+    // Push all relevant forward pointers
+    BitMap::iterator itEnd2 = thisForwardPointers.begin(true,atEnd.getIndex());
     for (BitMap::iterator it2 = thisForwardPointers.begin(true,atStart.getIndex());
 	 it2 != itEnd2;
 	 ++it2) {
 	HeapRef href((NativeType)*it2);
-	Cell *cellPtr = toAbsolute(href);
-	if (onGCStack) {
-	    if (isInRange(*cellPtr, atStart, atEnd)) {
-		thisStackGC.push(cellPtr);
-	    } 
-	} else {
-	    if (cellPtr->getTag() == Cell::CON) {
-		Cell ref(Cell::STR, href);
-		if (isInRange(ref, atStart, atEnd)) {
-		    thisStack.push(ref);
-		}
+	Cell backPtr = getCell0(href);
+	assert(backPtr.getTag() == Cell::REF);
+	HeapRef forwardPointerSrc = toHeapRef(backPtr);
+	Cell fwdSrc = getCell0(forwardPointerSrc);
+	if (isInRange(fwdSrc, atStart, atEnd)) {
+	    if (onGCStack) {
+		thisStackGC.push(toAbsolute(href));
+	    } else {
+		thisStack.push(backPtr);
+		thisStack.push(fwdSrc);
 	    }
 	}
     }
-    */
 }
 
 Cell Heap::followFwd(Cell cell)
@@ -1424,7 +1454,7 @@ Cell Heap::followFwd(Cell cell)
     }
 }
 
-void Heap::updateRoots()
+void Heap::updateRoots(HeapRef atStart, HeapRef atEnd)
 {
     size_t stackSize = thisStack.getSize();
 
@@ -1448,6 +1478,22 @@ void Heap::updateRoots()
 	}
     }
 
+    // Update forward pointers
+    BitMap::iterator itEnd2 = thisForwardPointers.begin(true,atEnd.getIndex());
+    for (BitMap::iterator it2 = thisForwardPointers.begin(true,atStart.getIndex());
+	 it2 != itEnd2;
+	 ++it2) {
+	HeapRef href((NativeType)*it2);
+	Cell backPtr = getCell0(href);
+	assert(backPtr.getTag() == Cell::REF);
+	HeapRef forwardPointerSrc = toHeapRef(backPtr);
+	Cell cell = getCell0(forwardPointerSrc);
+	Cell cell1 = followFwd(cell);
+	if (cell != cell1) {
+	    *toAbsolute(forwardPointerSrc) = cell1;
+	}
+    }
+
     // Todo: scan trail
 }
 
@@ -1456,7 +1502,6 @@ bool Heap::isInRange(Cell cell, HeapRef atStart, HeapRef atEnd)
     if (cell.isNull()) {
 	return false;
     }
-    cell = deref(cell);
     if (!hasHeapRef(cell)) {
 	return false;
     }
@@ -1498,8 +1543,17 @@ void Heap::findLive(size_t topSize)
     pushRoots(atStart, atEnd, false);
     thisLive.clearBits(atStart.getIndex(), atEnd.getIndex());
 
+    // Mark all back pointers to forward pointers as live
+    BitMap::iterator itEnd2 = thisForwardPointers.begin(true,atEnd.getIndex());
+    for (BitMap::iterator it2 = thisForwardPointers.begin(true,atStart.getIndex());
+	 it2 != itEnd2;
+	 ++it2) {
+	size_t index = *it2;
+	thisLive.setBit(index);
+    }
+
     while (stackSize != thisStack.getSize()) {
-	Cell cell = deref(thisStack.pop());
+	Cell cell = thisStack.pop();
 
 	switch (cell.getTag()) {
 	case Cell::CON:
@@ -1511,10 +1565,13 @@ void Heap::findLive(size_t topSize)
 		    HeapRef functorRef = toHeapRef(cell);
 		    Cell fun = getCell0(functorRef);
 		    size_t arity = getArity(fun);
+		    bool isVisited = thisLive.hasBit(functorRef.getIndex());
 		    thisLive.setBits(functorRef.getIndex(),
 				     functorRef.getIndex()+arity+1);
-		    for (size_t i = 0; i < arity; i++) {
-			thisStack.push(getArg(cell, i));
+		    if (!isVisited) {
+			for (size_t i = 0; i < arity; i++) {
+			    thisStack.push(getArg(cell, i));
+			}
 		    }
 		}
 		break;
@@ -1523,7 +1580,11 @@ void Heap::findLive(size_t topSize)
 	    {
 		if (isInRange(cell, atStart, atEnd)) {
 		    HeapRef ref = toHeapRef(cell);
+		    bool isVisited = thisLive.hasBit(ref.getIndex());
 		    thisLive.setBit(ref.getIndex());
+		    if (!isVisited) {
+			thisStack.push(getCell0(ref));
+		    }
 		}
 		// Already derefenced. Nothing to follow
 		break;
@@ -1583,15 +1644,16 @@ HeapRef Heap::findFreeSlotBound(size_t numCells, HeapRef oldLoc) const
 {
     HeapRef href = findFreeSlot(numCells);
     if (href.isEmpty() || href > oldLoc) {
-	href = oldLoc;
+	return oldLoc;
+    } else {
+	return href;
     }
-    return href;
 }
 
-void Heap::compactMove0(HeapRef from, size_t numCells, HeapRef to)
+void Heap::compactMove0(HeapRef from, size_t numCells, HeapRef to, int verbosity)
 {
-    if (from == to) {
-	return;
+    if (verbosity > 1) {
+	std::cout << "MOVE-OK-: " << from.getIndex() << " " << to.getIndex() << " numCells=" << numCells << "\n";
     }
 
     Cell *fromCell = toAbsolute(from);
@@ -1602,57 +1664,30 @@ void Heap::compactMove0(HeapRef from, size_t numCells, HeapRef to)
     // Also make a conservative update on forward references
     // TODO: We're going to change how forward pointers are
     // managed.
-    /*
     if (thisForwardPointers.hasBit(from.getIndex())) {
 	thisForwardPointers.setBit(to.getIndex());
     }
-    */
 
     // Mark this section as live
     thisLive.setBits(to.getIndex(), to.getIndex()+numCells);
+}
 
+void Heap::compactMove(HeapRef from, size_t numCells, HeapRef to, int verbosity)
+{
     // Update compacted end
     if (to + numCells > thisCompactedEnd) {
 	thisCompactedEnd = to + numCells;
     }
-}
 
-void Heap::compactMove(HeapRef from, size_t numCells, HeapRef to)
-{
     if (from == to) {
+	if (verbosity > 2) {
+	    std::cout << "MOVEFAIL: " << from.getIndex() << " " << to.getIndex() << " numCells=" << numCells << "\n";
+	}
 	return;
     }
-    compactMove0(from, numCells, to);
+    compactMove0(from, numCells, to, verbosity);
     setCell(from, Cell(Cell::FWD, to));
 }
-
-/*
-bool Heap::updateForward(IHeapRef href)
-{
-    Cell cell = getCell(href);
-    switch (cell.getTag()) {
-    case Cell::CON:
-    case Cell::FWD:
-	return false;
-    case Cell::STR:
-    case Cell::INT32:
-    case Cell::REF:
-	{
-	    IHeapRef href1 = toIHeapRef(cell);
-	    Cell cell1 = getCell(href1);
-	    if (cell1.getTag() == Cell::FWD) {
-		IHeapRef newLoc = toIHeapRef(cell1);
-		cell.setValue(newLoc.getIndex());
-		setCell(href, cell);
-		return true;
-	    }
-	    return false;
-	}
-    case Cell::EXT:
-	return false;
-    }
-}
-*/
 
 void Heap::initiateGC(size_t topSize)
 {
@@ -1677,19 +1712,27 @@ void Heap::finalizeGC(size_t topSize)
     }
     atStart = atEnd - topSize;
 
-    updateRoots();
+    updateRoots(atStart, atEnd);
     thisLive.clearBits(thisCompactedEnd.getIndex(), atEnd.getIndex());
 
-    std::cout << "END: " << atEnd.getIndex() << "\n";
-    std::cout << "COMPACTED: " << thisCompactedEnd.getIndex() << "\n";
-
-    for (HeapRef href = thisCompactedEnd; href < atEnd; ++href) {
-	// setCell(href, Cell(Cell::REF,0));
+    thisForwardPointers.clearBits(thisCompactedEnd.getIndex(),
+				  atEnd.getIndex());
+    if (isStrict()) {
+	for (HeapRef href = thisCompactedEnd; href < atEnd; ++href) {
+	    setCell(href, Cell(0));
+	    /*
+	    char msg[128];
+	    sprintf(msg, "#%d", href.getIndex());
+	    ConstRef xx = getConst(msg, 0);
+	    setCell(href, Cell(Cell::CON, xx));
+	    */
+	}
     }
+    trim(thisCompactedEnd.getIndex());
 }
 
 // Move live data to compact it
-void Heap::compactLive(size_t topSize)
+void Heap::compactLive(size_t topSize, int verbosity)
 {
     HeapRef atStart = topHeapRef();
     HeapRef atEnd = atStart;
@@ -1709,8 +1752,24 @@ void Heap::compactLive(size_t topSize)
 
     while (stackSize != thisStackGC.getSize()) {
 	Cell *cellPtr = thisStackGC.pop();
-	Cell cell = deref(*cellPtr);
-	*cellPtr = cell;
+	Cell cell = *cellPtr;
+
+	bool visited = false;
+	if (isValid(cellPtr)) {
+	    visited = thisVisited.hasBit(toRelative(cellPtr));
+	    thisVisited.setBit(toRelative(cellPtr));
+	}
+
+	if (hasHeapRef(cell)) {
+	    Cell to = getCell0(toHeapRef(cell));
+	    if (to.getTag() == Cell::FWD) {
+		// Update FWD reference
+		cell = Cell(cell.getTag(), toHeapRef(to));
+		*cellPtr = cell;
+		continue;
+	    }
+	}
+
 	switch (cell.getTag()) {
 	case Cell::CON:
 	    break;
@@ -1718,49 +1777,43 @@ void Heap::compactLive(size_t topSize)
 	    {
 		HeapRef dst = toHeapRef(cell);
 		Cell dstCell = getCell0(dst);
-		if (dstCell.getTag() == Cell::FWD) {
-		    dstCell = Cell(Cell::STR, toHeapRef(dstCell));
-		    *cellPtr = dstCell;
-		    break;
-		}
-		if (thisVisited.hasBit(dst.getIndex())) {
-		    break;
-		}
-		thisVisited.setBit(dst.getIndex());
 		size_t arity = getArity(dstCell);
 		size_t numCells = 1 + arity;
 		HeapRef newLoc = findFreeSlotBound(numCells, dst);
-		if (dst != newLoc) {
-		     compactMove(dst, numCells, newLoc);
-		     for (size_t i = 0; i < arity; i++) {
-			 HeapRef arg = getArgRef(newLoc, i);
-			 if (atStart <= arg && arg <= atEnd) {
-			     thisStackGC.push(toAbsolute(arg));
-			 }
-		     }
-		     *cellPtr = Cell(Cell::STR, newLoc);
+		compactMove(dst, numCells, newLoc, verbosity);
+		if (!visited) {
+		    for (size_t i = 0; i < arity; i++) {
+			HeapRef arg = getArgRef(newLoc, i);
+			if (atStart <= arg && arg < atEnd) {
+			    thisStackGC.push(toAbsolute(arg));
+			}
+		    }
+		    *cellPtr = Cell(Cell::STR, newLoc);
 		}
 		break;
 	    }
 	case Cell::REF:
 	    {
+		// It's ok to move forward pointer objects (they
+		// point backwards to the forward pointer source location),
+		// but it's not ok to move the forward pointer source
+		// (destination is ok though) as it may reside as a functor
+		// arg, and then the outer functor "owns" the memory.
+		bool isForwardPtr = isValid(cellPtr) &&
+	 	           thisForwardPointers.hasBit(toRelative(cellPtr));
 		HeapRef dst = toHeapRef(cell);
-		Cell dstCell = getCell0(dst);
-		if (dstCell.getTag() == Cell::FWD) {
-		    dstCell = Cell(Cell::REF, toHeapRef(dstCell));
-		    *cellPtr = dstCell;
-		    break;
-		}
-		if (thisVisited.hasBit(dst.getIndex())) {
-		    break;
-		}
-		thisVisited.setBit(dst.getIndex());
-		size_t numCells = 1;
-		HeapRef newLoc = findFreeSlotBound(numCells, dst);
-		if (dst != newLoc) {
-		    compactMove(dst, numCells, newLoc);
-		    setCell(newLoc, Cell(Cell::REF, newLoc));
-		    *cellPtr = Cell(Cell::REF, newLoc);
+		if (!isForwardPtr) {
+		    size_t numCells = 1;
+		    HeapRef newLoc = findFreeSlotBound(numCells, dst);
+		    compactMove(dst, numCells, newLoc, verbosity);
+		    if (dst != newLoc) {
+			*cellPtr = Cell(Cell::REF, newLoc);
+		    }
+		    if (!visited && atStart <= newLoc && newLoc < atEnd) {
+			thisStackGC.push(toAbsolute(newLoc));
+		    }
+		} else {
+		    thisStackGC.push(toAbsolute(dst));
 		}
 		break;
 	    }
@@ -1773,8 +1826,8 @@ void Heap::compactLive(size_t topSize)
 		thisVisited.setBit(dst.getIndex());
 		size_t numCells = 1;
 		HeapRef newLoc = findFreeSlotBound(numCells, dst);
+		compactMove(dst, numCells, newLoc, verbosity);
 		if (dst != newLoc) {
-		    compactMove(dst, numCells, newLoc);
 		    *cellPtr = Cell(Cell::INT32, newLoc);
 		}
 		break;

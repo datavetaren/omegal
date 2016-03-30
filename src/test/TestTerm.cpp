@@ -429,11 +429,12 @@ CellRef generalizeTerm(Heap &heap, CellRef term, int p, bool lotsOfForward)
     }
 }
 
-void testUnifyBig(double gcFactor, bool withForwards)
+void testUnifyBig(double gcFactor, bool withForwards, int verbosity = 1)
 {
-    //    std::cout << "-------- testUnifyBig(" << gcFactor << "," << withForwards << ") --------------------";
+    std::cout << "-------- testUnifyBig(" << gcFactor << "," << withForwards << ") --------------------\n";
 
     Heap heap;
+    heap.setStrict(true);
 
     CellRef hTerm;
 
@@ -454,33 +455,38 @@ void testUnifyBig(double gcFactor, bool withForwards)
 
     std::stringstream ss;
     heap.print(ss, term, param);
-    std::cout << " TERM:\n";
-    std::cout << ss.str() << "\n";
+    if (verbosity > 1) {
+	std::cout << "TERM: " << ss.str() << "\n";
+    }
 
-    std::cout << "GTERM:\n";
     CellRef gTerm = generalizeTerm(heap, term, 10, false);
     std::stringstream ss2;
     heap.print(ss2, gTerm, param);
-    std::cout << ss2.str() << "\n";
+    if (verbosity > 1) {
+	std::cout << "GTERM: " << ss2.str() << "\n";
+    }
 
-    std::cout << "HTERM:\n";
     hTerm = generalizeTerm(heap, term, 10, withForwards);
     std::stringstream ss3;
     heap.print(ss3, hTerm, param);
-    std::cout << ss3.str() << "\n";
+    if (verbosity > 1) {
+	std::cout << "HTERM: " << ss3.str() << "\n";
+    }
 
     // Let's unify all terms together. It must succeed!
     std::cout << "Unify GTERM and HTERM\n";
     assert(heap.unify(gTerm, hTerm));
-    std::cout << "GHTERM:\n";
     std::stringstream ss4;
     heap.print(ss4, gTerm, param);
-    std::cout << ss4.str() << "\n";
+    if (verbosity > 1) {
+	std::cout << "GTERM: " << ss4.str() << "\n";
+    }
     std::stringstream ss5;
     heap.print(ss5, hTerm, param);
-    std::cout << ss5.str() << "\n";
-    // @@@ ENABLE
-    // assert(ss4.str() == ss5.str());
+    if (verbosity > 1) {
+	std::cout << "HTERM: " << ss5.str() << "\n";
+    }
+    assert(ss4.str() == ss5.str());
 
     // And finally unify with original term
     bool r;
@@ -488,11 +494,12 @@ void testUnifyBig(double gcFactor, bool withForwards)
     assert(r);
 
     heap.print(ss6, hTerm, param);
-    std::cout << ss6.str() << "\n";
+    if (verbosity > 1) {
+	std::cout << ss6.str() << "\n";
+    }
 
     // And we should be back to original term.
-    // @@@ ENABLE
-    // assert(ss.str() == ss6.str());
+    assert(ss.str() == ss6.str());
     } // Only reference to hTerm should survive
 
     // Create a new random reference to this term.
@@ -501,17 +508,21 @@ void testUnifyBig(double gcFactor, bool withForwards)
     heap.unify(newVar, outer);
 
     // Print heap status
-    heap.printStatus(std::cout, 1);
-    std::cout << "\n";
+    heap.printStatus(std::cout, verbosity - 1);
 
-    heap.gc(gcFactor);
+    std::cout << "First gc\n";
+    heap.gc(gcFactor, verbosity);
+    std::cout << "Second gc\n";
+    heap.gc(gcFactor, verbosity);
 
     std::stringstream ss7;
     heap.print(ss7, hTerm, param);
-    std::cout << "AFTER GC: " << ss7.str() << "\n";
+    if (verbosity > 1) {
+	std::cout << "Term after GC\n" << ss7.str() << "\n";
+    }
 
-    std::cout << "Compare that they equal after GC: " << (ss7 == ss6) << "\n";
-    assert(ss7 == ss6);
+    std::cout << "Compare that they equal after GC: " << (ss7.str() == ss6.str()) << "\n";
+    assert(ss7.str() == ss6.str());
 }
 
 class Xyz {
@@ -538,13 +549,12 @@ int main(int argc, char *argv[] )
     testUnify1();
     testUnify2();
 
-    testUnifyBig(1.0, true);
-
-    // testUnifyBig(0.25, false);
-    // testUnifyBig(0.5, true);
-    // testUnifyBig(0.5, false);
-    // testUnifyBig(1.0, true);
-    // testUnifyBig(1.0, false);
+    testUnifyBig(0.4, true, 1);
+    testUnifyBig(0.8, true, 1);
+    testUnifyBig(1.0, true, 1);
+    testUnifyBig(0.4, false, 1);
+    testUnifyBig(0.8, false, 1);
+    testUnifyBig(1.0, false, 1);
 
     return 0;
 }

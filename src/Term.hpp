@@ -155,6 +155,8 @@ public:
     inline ConstRef(NativeType index) : Index(index) { }
 
     friend std::ostream & operator << (std::ostream &out, const ConstRef &cr);
+
+    inline bool isNull() const { return getIndex() == 0; }
 };
 
 template<> struct HashOf<ConstRef> {
@@ -443,6 +445,9 @@ class Heap {
 public:
     Heap(size_t capacity = 65536);
 
+    void setStrict(bool strict);
+    bool isStrict() const;
+
     ConstRef getConst(size_t ordinal) const;
     ConstRef getConst(const char *name, size_t arity) const;
     ConstRef getConst(ConstRef other, size_t newArity) const;
@@ -522,7 +527,7 @@ public:
 	setCell(href, cell);
 	checkForwardPointer(href, cell);
     }
-    
+
     inline void checkForwardPointer(HeapRef href, Cell cell)
     {
 	switch (cell.getTag()) {
@@ -535,7 +540,7 @@ public:
 	    {
 		HeapRef dst = toHeapRef(cell);
 		if (dst > href) {
-		    thisForwardPointers.setBit(dst.getIndex());
+		    createForwardPointer(href, dst);
 		}
 	    }
 	    break;
@@ -544,15 +549,7 @@ public:
 	}
     }
 
-    /*
-    inline HeapRef newCell(Cell cell)
-    {
-	Cell *cellPtr = allocate(1);
-	HeapRef href(*this, toRelative(cellPtr));
-	*cellPtr = cell;
-	return href;
-    }
-    */
+    void createForwardPointer(HeapRef from, HeapRef to);
 
     inline void setCell(HeapRef ref, Cell cell)
     {
@@ -676,8 +673,8 @@ public:
 
     // ----------------------------------------------------------
 
-    void gc(size_t topSize);
-    void gc(double percentage);
+    void gc(size_t topSize, int verbosity = 0);
+    void gc(double percentage, int verbosity = 0);
 
 private:
     void print( std::ostream &out, Cell cell,
@@ -714,11 +711,20 @@ private:
     inline size_t getArity(Cell cell)
     {
 	cell = deref(cell);
-	if (cell.getTag() == Cell::CON) {
+	switch (cell.getTag()) {
+	case Cell::CON:
 	    return thisConstTable.getConstArity(cell.toConstRef());
-	} else {
-	    Cell fun = getFunctor(cell);
-	    return thisConstTable.getConstArity(fun.toConstRef());
+	case Cell::STR:
+	    {
+		Cell fun = getFunctor(cell);
+		if (!fun.toConstRef().isNull()) {
+		    return thisConstTable.getConstArity(fun.toConstRef());
+		} else {
+		    return 0;
+		}
+	    }
+	default:
+	    return 0; // Unknown
 	}
     }
 
@@ -738,7 +744,7 @@ private:
     }
 
     void pushRoots(HeapRef atStart, HeapRef atEnd, bool onGCStack);
-    void updateRoots();
+    void updateRoots(HeapRef atStart, HeapRef atEnd);
     Cell followFwd(Cell cell);
     void resetFreePointers(HeapRef atStart);
     HeapRef findFreeSlot(size_t numCells) const;
@@ -748,10 +754,10 @@ private:
     void initiateGC(size_t topSize);
     void finalizeGC(size_t topSize);
     void findLive(size_t topSize);
-    void compactMove(HeapRef from, size_t numCells, HeapRef to);
-    void compactMove0(HeapRef from, size_t numCells, HeapRef to);
+    void compactMove(HeapRef from, size_t numCells, HeapRef to, int verbosity);
+    void compactMove0(HeapRef from, size_t numCells, HeapRef to,int verbosity);
 
-    void compactLive(size_t topSize);
+    void compactLive(size_t topSize, int verbosity);
     void printLive(std::ostream &out, size_t topSize) const;
 
 public:
@@ -784,6 +790,11 @@ private:
 	return thisHeap.toRelative(cellPtr);
     }
 
+    inline bool isValid(Cell *cellPtr) const
+    {
+	return thisHeap.isValid(cellPtr);
+    }
+
     inline Cell * toAbsolute(size_t relative) const
     {
 	return thisHeap.toAbsolute(relative);
@@ -795,9 +806,9 @@ private:
     }
 
 
-    inline void trim(size_t size)
+    inline void trim(HeapRef href)
     {
-	thisHeap.trim(size);
+	thisHeap.trim(href.getIndex()-1);
     }
 
     size_t getStringLength(Cell cell, size_t maximum) const;
@@ -836,17 +847,17 @@ private:
     void discardState();
 
     struct State {
-	size_t thisHeapSize;
+	HeapRef thisHeapTop;
 	size_t thisStackSize;
 	size_t thisTrailSize;
 	bool thisUseTrail;
     };
 
     GrowingAllocator<Cell> thisHeap;
+    bool thisIsStrict;
     BitMap thisForwardPointers;
     BitMap thisLive;
     BitMap thisVisited;
-    BitMap thisMoved;
     HeapRef thisCompactedEnd;
     static const size_t TRACK_SIZES = 256;
     mutable HeapRef thisFreePtr[TRACK_SIZES];
