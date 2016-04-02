@@ -34,7 +34,47 @@ typedef Flags<Token> Expect;
 //   <29 bits>   [HeapIndex]   000   REF Variable
 //   <29 bits>   [ConstIndex]  001   CON Constant
 //   <29 bits>   [HeapIndex]   010   STR Structure (pointing at functor+arity)
-//   <29 bits>   [HeapIndex]   011   INT32 Constant
+//   <29 bits>   [HeapIndex]   011   MAP (Hash Array Mapped Trie)
+//   <29 bits>   [HeapIndex]   101   INT32 Constant
+//   <29 bits>   [HeapIndex]   110   FWD Forward reference for GC
+//   <29 bits>   [---------]   111   EXT Extended cell
+//
+//
+// REF: These are same as in WAM. They point at other things, or
+//      they point at themselves (to represent an unbound variable.)
+// CON: Constants. The upper bits then represent the index to a
+//      constant table. This table never shrinks. Only new constants
+//      are added over time.
+// STR: Structure. Same as in WAM. It points at a CON cell. The CON
+//      cell contains information about arity and the arity is used
+//      to tell how many arguments follow.
+//      For example, [1] STR: 2 [2] CON f/3 [3] <Arg1> [4] <Arg2> [5] <Arg3>
+//
+// MAP: Hash array mapped trie (HAMT). To represent O(1) non-destructive
+//      hash tables. A MAP is a reference that points to a cell:
+//      [1] MAP: 2 [2] <meta> [3] <mask> [4] <Arg0> [5] <Arg1> ... [?] <Argn>
+//      <meta> contains meta data such as the <depth> of the tree or whether
+//      the node is representing a root (see mroe below).
+//
+//      <mask> is a 32-bit mask with 1:s telling whether
+//      there exist a non-null argument. Only the non-null arguments then
+//      follow. Thus, counting the bits in <mask> gives you the number of
+//      arguments that follow.
+//
+//      The first cell of a pointing MAP: The 32 bits are encoding:
+//                                       [1 bit] = root yes/no
+//                               [3 bits]        = depth (0-7)
+//                      [28 bits]                = entry count
+//      
+// INT32: Points at a full cell (with no tag) that contains a raw 32-bit
+//      (signed) integer.
+// FWD: This is only used during garbage collection. When a thunk is moved
+//      during compaction, we write FWD reference at the old location that
+//      points to the new location so others (during GC) can find it.
+//      Once GC is complete, FWD is no longer used. Thus, from a user
+//      standpoint, this is something that is never seen in terms.
+// EXT: Extended cell. The remaining bits give remaining interpretation.
+//      This enables us to extend the system with new cell types.
 //
 
 // Index to heap.
@@ -181,9 +221,7 @@ template<> struct HashOf<ConstRef> {
 class Cell {
 public:
     enum Tag { REF = 0, CON = 1, STR = 2, MAP = 3, INT32 = 5, FWD = 6, EXT = 7 };
-    enum ExtTag { EXT_COMMA = 7 + (1 << 3), 
-		  EXT_END = 7 + (2 << 3)
-                };
+    enum ExtTag { };
 
     inline Cell() : thisCell(0) { }
     inline Cell(Tag tag, NativeType value) : thisCell(((NativeType)tag) | value << 3) { }
@@ -202,7 +240,7 @@ public:
 
     inline NativeType getValue() const { return thisCell >> 3; }
     inline void setValue(NativeType val) { thisCell = (thisCell & 0x7) | (val << 3); }
-
+    inline void setRawValue(NativeType val) { thisCell = val; }
     inline NativeType getRawValue() const { return thisCell; }
 
     inline bool operator == (const Cell &other) const { return thisCell == other.thisCell; }
@@ -218,7 +256,7 @@ class CellRef {
 public:
     inline CellRef();
     inline CellRef(const CellRef &other);
-    inline CellRef(Heap &heap, const Cell &cell);
+    inline CellRef(const Heap &heap, Cell cell);
     inline ~CellRef();
 
     inline bool isEmpty() const { return thisHeap == NULL; }
@@ -228,7 +266,7 @@ public:
     inline const Cell * operator -> () const { return &thisCell; }
 
 private:
-    Heap *thisHeap;
+    const Heap *thisHeap;
     Cell thisCell;
 };
 
@@ -242,7 +280,7 @@ template<> struct HashOf<Cell> {
 class ConstString {
 public:
     ConstString(const Char *str, size_t n, size_t arity)
-        : thisLength(n), thisArity(arity), thisString(str), thisNoEscape(false) { }
+        : thisLength(n), thisArity(arity), thisString(str), thisNoEscape(arity == MAX_ARITY) { }
 
     bool isNoEscape() const { return thisNoEscape; }
     void setNoEscape(bool noEscape) { thisNoEscape = noEscape; }
@@ -285,6 +323,8 @@ public:
 	ensureReservedMap();
 	return RESERVED_MAP[(uint8_t)ch];
     }
+    
+    static size_t const MAX_ARITY = 0xffffff;
 
 private:
     static void ensureReservedMap() {
@@ -495,12 +535,26 @@ public:
 	return CellRef(*this, cell);
     }
 
-    inline CellRef newCon(ConstRef constRef)
+    inline CellRef newConOnHeap(ConstRef constRef)
     {
 	Cell *cellPtr = allocate(1);
 	Cell con(constRef);
 	*cellPtr = con;
         return CellRef(*this, con);
+    }
+
+    inline CellRef newCon(ConstRef constRef)
+    {
+	Cell con(constRef);
+	return CellRef(*this, con);
+    }
+
+    inline CellRef newList(CellRef first, CellRef rest)
+    {
+	CellRef lst = newStr(thisFunctorDot);
+	setArg(lst, 0, first);
+	setArg(lst, 1, rest);
+	return lst;
     }
 
     inline CellRef newStr(HeapRef strRef)
@@ -529,16 +583,33 @@ public:
 	checkForwardPointer(href, cell);
     }
 
-    size_t bitCount(uint32_t w)
+    inline bool isFunctor(const CellRef &cell, ConstRef functor) const
     {
-	w = w - ((w >> 1) & 0x55555555);
-	w = (w & 0x33333333) + ((w >> 2) & 0x33333333);
-	return (((w + (w >> 4)) & 0x0F0F0F0F) * 0x01010101) >> 24;
+	return isFunctor(*cell, functor);
     }
 
-    inline CellRef newMap(size_t depth);
+    inline bool isEmpty(const CellRef &cell) const
+    {
+	return isEmpty(*cell);
+    }
+
+    inline bool isDot(const CellRef &cell) const
+    {
+	return isDot(*cell);
+    }
+
+    CellRef newMap(size_t depth);
+    CellRef putMap(CellRef mapCell, CellRef key, CellRef value);
+
+private:
+    // Helper functions for maps (or associative arrays)
+    CellRef createNewSubMap(size_t depth, uint32_t hash,
+			    CellRef key, CellRef value);
     CellRef setArg32(CellRef mapCell, size_t index, CellRef arg);
     CellRef getArg32(CellRef mapCell, size_t index);
+
+public:
+    uint32_t hashOf(CellRef term);
 
     inline CellRef newInt32(int32_t value)
     {
@@ -548,7 +619,7 @@ public:
 	return CellRef(*this, int32Ref);
     }
 
-    inline ConstRef getConst(HeapRef atRef)
+    inline ConstRef getConst(HeapRef atRef) const
     {
 	HeapRef hr = deref(atRef);
 	Cell c = getCell0(hr);
@@ -558,28 +629,28 @@ public:
 	return c.toConstRef();
     }
 
-    inline ConstRef getFunctorConst(CellRef strCell)
+    inline ConstRef getFunctorConst(CellRef strCell) const
     {
 	return (*getFunctor(strCell)).toConstRef();
     }
 
-    inline CellRef getFunctor(CellRef strCell)
+    inline CellRef getFunctor(CellRef strCell) const
     {
 	return CellRef(*this, getFunctor(*strCell));
     }
 
-    inline size_t getArity(const CellRef &cellRef)
+    inline size_t getArity(const CellRef &cellRef) const
     {
 	return getArity(*cellRef);
     }
 
-    inline CellRef getArg(const CellRef &strRef, size_t index)
+    inline CellRef getArg(const CellRef &strRef, size_t index) const
     {
 	Cell cell = getArg(*strRef, index);
 	return CellRef(*this, cell);
     }
 
-    inline HeapRef getArgRef(const CellRef &strRef, size_t index)
+    inline HeapRef getArgRef(const CellRef &strRef, size_t index) const
     {
 	return getArgRef(*strRef, index);
     }
@@ -587,6 +658,11 @@ public:
     // Unification
     // Try to unify the two terms. Returns true if successful.
     bool unify(CellRef a, CellRef b);
+
+    inline bool equal(CellRef a, CellRef b) const
+    {
+	return equal(*a, *b);
+    }
 
     size_t getStackSize() const;
 
@@ -664,6 +740,13 @@ public:
     void gc(double percentage, int verbosity = 0);
 
 private:
+    inline size_t bitCount(uint32_t w)
+    {
+	w = w - ((w >> 1) & 0x55555555);
+	w = (w & 0x33333333) + ((w >> 2) & 0x33333333);
+	return (((w + (w >> 4)) & 0x0F0F0F0F) * 0x01010101) >> 24;
+    }
+
     inline void checkForwardPointer(HeapRef href, Cell cell)
     {
 	switch (cell.getTag()) {
@@ -719,12 +802,12 @@ private:
 	return *toAbsolute(ref.getIndex());
     }
 
-    inline Cell getFunctor(Cell cell)
+    inline Cell getFunctor(Cell cell) const
     {
 	return getCell0(toHeapRef(deref(cell)));
     }
 
-    inline size_t getArity(Cell cell)
+    inline size_t getArity(Cell cell) const
     {
 	cell = deref(cell);
 	switch (cell.getTag()) {
@@ -744,20 +827,53 @@ private:
 	}
     }
 
-    inline Cell getArg(Cell strCell, size_t index)
+    inline Cell getArg(Cell strCell, size_t index) const
     {
 	return getCell0(getArgRef(deref(strCell), index));
     }
 
-    inline HeapRef getArgRef(Cell strCell, size_t index)
+    inline HeapRef getArgRef(Cell strCell, size_t index) const
     {
 	return toHeapRef(strCell)+index+1;
     }
 
-    inline HeapRef getArgRef(HeapRef functorRef, size_t index)
+    inline HeapRef getArgRef(HeapRef functorRef, size_t index) const
     {
 	return functorRef+index+1;
     }
+
+    inline bool equal(Cell a, Cell b) const
+    {
+	if (equalShallow(a,b)) {
+	    return true;
+	} else {
+	    return equalDeep(a,b);
+	}
+    }
+
+    inline bool equalShallow(Cell a, Cell b) const
+    {
+	a = deref(a);
+	b = deref(b);
+	if (a == b) {
+	    return true;
+	} else {
+	    if (a.getTag() != b.getTag()) {
+		return false;
+	    }
+	    switch (a.getTag()) {
+	    case Cell::CON: return false; // a == b should have been true
+	    case Cell::INT32: return getCell0(toHeapRef(a)) == getCell0(toHeapRef(b));
+	    case Cell::STR: return false;
+	    case Cell::MAP: return false;
+	    case Cell::REF: return false; // a == b should have been true
+	    case Cell::EXT: return false;
+	    case Cell::FWD: assert("Cell::FWD should not occur in this context"); return false;
+	    }
+	}
+    }
+
+    bool equalDeep(Cell a, Cell b) const;
 
     void pushRoots(HeapRef atStart, HeapRef atEnd, bool onGCStack);
     void updateRoots(HeapRef atStart, HeapRef atEnd);
@@ -786,8 +902,8 @@ public:
     std::string toRawString() const;
     std::string toRawString(HeapRef from, HeapRef to) const;
 
-    void addGlobalRoot(Cell *cellRef);
-    void removeGlobalRoot(Cell *cellRef);
+    void addGlobalRoot(Cell *cellRef) const;
+    void removeGlobalRoot(Cell *cellRef) const;
 
     void printStatus(std::ostream &out, int detail = 0) const;
     void printRoots(std::ostream &out) const;
@@ -827,6 +943,30 @@ private:
 	thisHeap.trim(href.getIndex()-1);
     }
 
+    bool isSpecialFunctor(ConstRef cref) const;
+
+    inline bool isFunctor(Cell cell, ConstRef functor) const
+    {
+	switch (cell.getTag()) {
+	case Cell::CON: return cell.toConstRef() == functor;
+	case Cell::STR: cell = deref(getCell0(toHeapRef(cell)));
+	                return cell.getTag() == Cell::CON &&
+			       cell.toConstRef() == functor;
+	default:
+	    return false;
+	}
+    }
+
+    inline bool isEmpty(Cell cell) const
+    {
+	return isFunctor(cell, thisFunctorEmpty);
+    }
+
+    inline bool isDot(Cell cell) const
+    {
+	return isFunctor(cell, thisFunctorDot);
+    }
+
     size_t getStringLength(Cell cell, size_t maximum) const;
     size_t getStringLengthForStruct(Cell cell) const;
     size_t getStringLengthForMap(Cell cell) const;
@@ -836,7 +976,8 @@ private:
     void printTag(std::ostream &out, Cell cell) const;
     void printConst(std::ostream &out, Cell cell) const;
     void printInt32(std::ostream &out, int32_t) const;
-    ConstRef pushArgs(Cell strCell);
+    ConstRef pushPrintStrArgs(Cell strCell);
+    void pushPrintMapArgs(Cell mapCell, bool &isRoot);
     void printRef(std::ostream &out, Cell cell) const;
     ConstRef getRefName(Cell cell) const;
     CellRef getRef(ConstRef refName) const;
@@ -893,19 +1034,27 @@ private:
 
     static const size_t MAX_NUM_GLOBAL_ROOTS = 1024;
     typedef OpenHashMap<IndexedCellPtr, Cell *> RootMap;
-    RootMap thisGlobalRoots;
-    size_t thisMaxNumGlobalRoots;
+    mutable RootMap thisGlobalRoots;
+    mutable size_t thisMaxNumGlobalRoots;
 
-    // $arg32 functors with arities 1 to 8
-    ConstRef thisDotFunctor;
-    ConstRef thisEmptyFunctor;
+    ConstRef thisFunctorDot;
+    ConstRef thisFunctorEmpty;
+    ConstRef thisFunctorComma;
+    ConstRef thisFunctorColon;
+
+    ConstRef thisPrintRParen;
+    ConstRef thisPrintRBrace;
+    ConstRef thisPrintRBracket;
+    ConstRef thisPrintComma;
+    ConstRef thisPrintDot;
+    ConstRef thisPrintEmpty;
 };
 
 inline CellRef::CellRef() : thisHeap(NULL), thisCell()
 {
 }
 
-inline CellRef::CellRef(Heap &heap, const Cell &cell) : thisHeap(&heap), thisCell(cell)
+inline CellRef::CellRef(const Heap &heap, Cell cell) : thisHeap(&heap), thisCell(cell)
 {
     heap.addGlobalRoot(&thisCell);
 }

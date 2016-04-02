@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <vector>
 #include "../Term.hpp"
+#include "../Hash.hpp"
 
 using namespace PROJECT;
 
@@ -66,14 +67,14 @@ void testWAMBookFigure21()
     HeapRef origin = heap.topHeapRef();
 
     heap.newStr(heap.topHeapRef() + 1);
-    heap.newCon(h2);
+    heap.newConOnHeap(h2);
     heap.newRef();
     heap.newRef();
     heap.newStr(heap.topHeapRef() + 1);
-    heap.newCon(f1);
+    heap.newConOnHeap(f1);
     heap.newRef(origin + 3);
     heap.newStr(heap.topHeapRef() + 1);
-    heap.newCon(p3);
+    heap.newConOnHeap(p3);
     heap.newRef(origin + 2);
     heap.newStr(origin + 1);
     heap.newStr(origin + 5);
@@ -535,6 +536,44 @@ private:
     int q;
 };
 
+//
+// HAMT thoughts
+//
+// So how to dynamically grow the tree?
+//
+// What we have at the leaves is a union that we need to split
+// up. How do we find what keys to remove from a leaf?
+//
+// Should be possible
+
+void testMap1()
+{
+    printf("-------- testMap1() ------------------------\n");
+
+    Heap heap;
+
+    CellRef map = heap.newMap(5);
+    for (size_t i = 0; i < 20; i++) {
+	char key[32];
+	char val[32];
+	sprintf(key, "key%lu", i);
+	sprintf(val, "val%lu", i);
+	ConstRef keyConst = heap.getConst(key, 0);
+	ConstRef valConst = heap.getConst(val, 0);
+
+	CellRef keyCell = heap.newCon(keyConst);
+	CellRef valCell = heap.newCon(valConst);
+	// std::cout << "HASH VALUE: " << heap.hashOf(keyCell) << " 5 bits=" << (heap.hashOf(keyCell) & 0x1f) << "\n";
+	map = heap.putMap(map, keyCell, valCell);
+
+	PrintParam param;
+	param.setMaxWidth(78-param.getStartColumn());
+	std::cout << "MAP: ";
+	heap.print(std::cout, map, param);
+	std::cout << "\n";
+    }
+}
+
 int main(int argc, char *argv[] )
 {
     std::cout << "TestTerm::main() **************************************\n";
@@ -555,6 +594,8 @@ int main(int argc, char *argv[] )
     testUnifyBig(0.4, false, 1);
     testUnifyBig(0.8, false, 1);
     testUnifyBig(1.0, false, 1);
+
+    testMap1();
 
     return 0;
 }

@@ -2,6 +2,7 @@
 #define _Stack_hpp
 
 #include "Growing.hpp"
+#include <algorithm>
 
 namespace PROJECT {
 
@@ -37,6 +38,18 @@ public:
 	size_t n = GrowingAllocator<T>::getSize();
 	T &t = *GrowingAllocator<T>::toAbsolute(n-rel);
 	return t;
+    }
+
+    // Reverse n elements on top of stack
+    void reverse(size_t n)
+    {
+	if (n == 0) return;
+	size_t top = GrowingAllocator<T>::getSize();
+	T *from = GrowingAllocator<T>::toAbsolute(top-n+1);
+	size_t half = n / 2;
+	for (size_t i = 0; i < half; i++) {
+	    std::swap(from[i], from[n-1-i]);
+	}
     }
 
     void trim(size_t newSize)

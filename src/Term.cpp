@@ -5,8 +5,54 @@
 #include <assert.h>
 #include "Stack.hpp"
 #include "Flags.hpp"
+#include "Hash.hpp"
 
 namespace PROJECT {
+
+// Map node facade (this is what the MAP cell is pointing at)
+// [1 bit]: if root yes/no
+// [3 bits]: for depth
+// [28 bits]: count
+//
+class MapNode
+{
+public:
+    inline MapNode(Cell *cellPtr) : thisCellPtr(cellPtr) { }
+
+    inline uint32_t getMeta() const
+        { return thisCellPtr[0].getRawValue(); }
+
+    inline void setMeta(uint32_t meta)
+        { thisCellPtr[0].setRawValue(meta); }
+
+    inline void setMeta(bool isRoot, size_t depth, size_t count)
+    { thisCellPtr[0].setRawValue((isRoot ? 1 : 0) | ((depth & 0x7) << 1) | (count << 4)); }
+
+    inline bool isRoot() const
+    { return (getMeta() & 1) != 0; }
+    inline size_t getDepth() const
+    { return static_cast<size_t>((getMeta() >> 1) & 0x7); }
+    inline size_t getCount() const
+    { return static_cast<size_t>(getMeta() >> 4); }
+    inline void setCount(size_t count)
+    { setMeta(isRoot(), getDepth(), getCount() + count); }
+    inline void incrementCount()
+    { setCount(getCount()+1); }
+
+    inline uint32_t getMask() const
+    { return static_cast<uint32_t>(thisCellPtr[1].getRawValue()); }
+
+    inline void setMask(uint32_t mask)
+    { thisCellPtr[1].setRawValue(mask); }
+
+    inline Cell getArg(size_t index) const
+    { return thisCellPtr[2+index]; }
+    inline void setArg(size_t index, Cell cell)
+    { thisCellPtr[2+index] = cell; }
+
+private:
+    Cell *thisCellPtr;
+};
 
 class LocationTracker {
 public:
@@ -405,7 +451,7 @@ void ConstTable::printConstNoArity(std::ostream &out, const ConstRef &ref) const
 	out << "null";
 	return;
     }
-    ConstString str(&data[2], (size_t)data[0], 0);
+    ConstString str(&data[2], (size_t)data[0], (data[1] == ConstString::MAX_ARITY) ? ConstString::MAX_ARITY : 0);
     out << str;
 }
 
@@ -453,18 +499,19 @@ Heap::Heap(size_t capacity)
 	 thisGlobalRoots(capacity),
 	 thisMaxNumGlobalRoots(0)
 {
+    // These are special functors. Not that special, but the
+    // pretty printer treats them differently.
+    thisFunctorDot = getConst(".", 2);
+    thisFunctorEmpty = getConst("[]", 0);
+    thisFunctorComma = getConst(",", 2);
+    thisFunctorColon = getConst(":", 2);
 
-    Cell extComma(Cell::EXT_COMMA, 0);
-    Cell extEnd(Cell::EXT_END, 0);
-
-    thisExtComma = extComma;
-    thisExtEnd = extEnd;
-
-    thisStack.push(thisExtComma);
-    thisStack.push(thisExtEnd);
-
-    thisDotFunctor = getConst(".", 2);
-    thisEmptyFunctor = getConst("[]", 0);
+    thisPrintRParen = getConst(")", ConstString::MAX_ARITY);
+    thisPrintRBrace = getConst("}", ConstString::MAX_ARITY);
+    thisPrintRBracket = getConst("]", ConstString::MAX_ARITY);
+    thisPrintComma = getConst(", ", ConstString::MAX_ARITY);
+    thisPrintDot = getConst(" . ", ConstString::MAX_ARITY);
+    thisPrintEmpty = getConst("[]", ConstString::MAX_ARITY);
 
     thisUseTrail = false;
 }
@@ -481,7 +528,7 @@ void Heap::setStrict(bool isStrict)
     thisIsStrict = isStrict;
 }
 
-void Heap::addGlobalRoot(Cell *cellPtr)
+void Heap::addGlobalRoot(Cell *cellPtr) const
 {
     thisGlobalRoots.put(IndexedCellPtr(cellPtr), cellPtr);
     if (thisGlobalRoots.numEntries() > thisMaxNumGlobalRoots) {
@@ -489,7 +536,7 @@ void Heap::addGlobalRoot(Cell *cellPtr)
     }
 }
 
-void Heap::removeGlobalRoot(Cell *cellPtr)
+void Heap::removeGlobalRoot(Cell *cellPtr) const
 {
     thisGlobalRoots.remove(IndexedCellPtr(cellPtr));
 }
@@ -546,11 +593,7 @@ void Heap::printTag(std::ostream &out, Cell cell) const
     case Cell::INT32: out << "INT32"; break;
     case Cell::FWD: out << "FWD"; break;
     case Cell::EXT:
-	switch (cell.getExtTag()) {
-	case Cell::EXT_COMMA: out << "EXT_COMMA"; break;
-	case Cell::EXT_END: out << "EXT_END"; break;
-	default: out << "???"; break;
-	}
+	default: out << "EXT?"; break;
     }
 }
 
@@ -571,12 +614,7 @@ void Heap::printCell(std::ostream &out, Cell cell) const
     case Cell::MAP: out << cell.getValue(); break;
     case Cell::INT32: out << toInt32(cell); break;
     case Cell::FWD: out << "$fwd(" << cell.getValue() << ")"; break;
-    case Cell::EXT:
-	switch (cell.getExtTag()) {
-	case Cell::EXT_COMMA: case Cell::EXT_END: break;
-	default:
-	    out << "???"; break;
-	}
+    case Cell::EXT: out << "???"; break;
     }
 }
 
@@ -615,6 +653,14 @@ std::string Heap::toRawString(HeapRef from, HeapRef to) const
     return ss.str();
 }
 
+bool Heap::isSpecialFunctor(ConstRef cref) const
+{
+    return cref == thisFunctorComma ||
+	   cref == thisFunctorDot ||
+	   cref == thisFunctorEmpty ||
+	   cref == thisFunctorColon;
+}
+
 size_t Heap::getStringLength(Cell cell, size_t maximum) const
 {
     size_t current = thisStack.getSize();
@@ -649,14 +695,6 @@ size_t Heap::getStringLength(Cell cell, size_t maximum) const
 	case Cell::FWD:
 	    len += getStringLengthForInt32(cell.getValue()) + 6; break;
         case Cell::EXT:
-	    switch (cell.getExtTag()) {
-	    case Cell::EXT_END:
-		len++; break;
-	    case Cell::EXT_COMMA:
-		len += 2; break;
-	    default:
-		break;
-	    }
 	    break;
 	}
     }
@@ -666,7 +704,7 @@ size_t Heap::getStringLength(Cell cell, size_t maximum) const
 size_t Heap::getStringLengthForStruct(Cell cell) const
 {
     size_t len = 0;
-    ConstRef cref = const_cast<Heap *>(this)->pushArgs(cell);
+    ConstRef cref = const_cast<Heap *>(this)->pushPrintStrArgs(cell);
     len += thisConstTable.getConstLength(cref);
     size_t arity = thisConstTable.getConstArity(cref);
     if (arity > 0) {
@@ -678,10 +716,11 @@ size_t Heap::getStringLengthForStruct(Cell cell) const
 size_t Heap::getStringLengthForMap(Cell cell) const
 {
     size_t len = 0;
-
-    // TODO: Traverse _all_ nodes of map and push _all_
-    // leaves. This will enable us for printing things like:
-    // { foo: bar, xyz: 42, ... }
+    bool isRoot = false;
+    const_cast<Heap *>(this)->pushPrintMapArgs(cell, isRoot);
+    if (isRoot) { // This is a root node of a map
+	len++; // The '{' character
+    }
 
     return len;
 }
@@ -728,20 +767,71 @@ std::string Heap::toString(Cell cell) const
     return ss.str();
 }
 
-ConstRef Heap::pushArgs(Cell strCell)
+ConstRef Heap::pushPrintStrArgs(Cell strCell)
 {
     size_t arity = getArity(strCell);
-    if (arity > 0) {
-	thisStack.push(thisExtEnd);
-	for (size_t i = 0; i < arity; i++) {
-	    if (i > 0) {
-		thisStack.push(thisExtComma);
+    ConstRef fun = getFunctor(strCell).toConstRef();
+    if (isSpecialFunctor(fun)) {
+	// Treat lists specially
+	if (fun == thisFunctorDot) {
+	    size_t stackMark = thisStack.getSize();
+	    while (isDot(strCell)) {
+		thisStack.push(getArg(strCell, 0));
+		strCell = getArg(strCell, 1);
+		if (isDot(strCell)) {
+		    thisStack.push(Cell(thisPrintComma));
+		}
 	    }
-	    Cell arg = getArg(strCell, arity-i-1);
-	    thisStack.push(arg);
+	    if (!isEmpty(strCell)) {
+		thisStack.push(Cell(thisPrintDot));
+		thisStack.push(strCell);
+	    }
+	    thisStack.push(Cell(thisPrintRBracket));
+	    // Now reverse the last items on stack
+	    thisStack.reverse(thisStack.getSize() - stackMark);
+	} else {
+	    // Special functor are always in infix form (with two arguments.)
+	    if (fun == thisFunctorComma) {
+		thisStack.push(thisPrintRParen);
+	    }
+	    thisStack.push(getArg(strCell, 1));
+	    thisStack.push(Cell(fun));
+	    thisStack.push(getArg(strCell, 0));
+	}
+    } else {
+	if (arity > 0) {
+	    thisStack.push(thisPrintRParen);
+	    for (size_t i = 0; i < arity; i++) {
+		if (i > 0) {
+		    thisStack.push(thisPrintComma);
+		}
+		Cell arg = getArg(strCell, arity-i-1);
+		thisStack.push(arg);
+	    }
 	}
     }
-    return getFunctor(strCell).toConstRef();
+    return fun;
+}
+
+void Heap::pushPrintMapArgs(Cell mapCell, bool &isRoot)
+{
+    Cell *cellPtr = toAbsolute(toHeapRef(mapCell));
+    MapNode mapNode(cellPtr);
+    bool isRoot0 = mapNode.isRoot();
+    isRoot = isRoot0;
+    if (isRoot0) {
+	thisStack.push(thisPrintRBrace);
+    }
+    uint32_t mask = mapNode.getMask();
+    for (size_t i = 0, cnt = 0; i < 32; i++) {
+	if ((mask & (1 << i)) != 0) {
+	    if (cnt > 0) {
+		thisStack.push(thisPrintComma);
+	    }
+	    thisStack.push(mapNode.getArg(cnt));
+	    cnt++;
+	}
+    }
 }
 
 ConstRef Heap::getRefName(Cell cell) const
@@ -801,7 +891,15 @@ void Heap::print(std::ostream &out, Cell cell, const PrintParam &param) const
 	case Cell::CON: {
 	    ConstRef cref = cell.toConstRef();
 	    printIndent(out, state.addToColumn(thisConstTable.getConstLength(cref)));
-	    thisConstTable.printConstNoArity(out, cref);
+	    if (isSpecialFunctor(cref)) {
+		thisConstTable.printConstNoEscape(out, cref);
+	    } else {
+		thisConstTable.printConstNoArity(out, cref);
+	    }
+	    if (cref == thisPrintRParen || cref == thisPrintRBracket ||
+		cref == thisPrintRBrace) {
+		state.decrementIndent();
+	    }
 	    break;
   	    }
 	case Cell::INT32: {
@@ -818,16 +916,32 @@ void Heap::print(std::ostream &out, Cell cell, const PrintParam &param) const
 		
 		state.newLine(out);
 	    }
-	    ConstRef cref = const_cast<Heap *>(this)->pushArgs(cell);
-	    size_t arity = thisConstTable.getConstArity(cref);
-	    printIndent(out, state.addToColumn(
-	       thisConstTable.getConstLength(cref)
-	       + ((arity > 0) ? 1 : 0)));
-	    thisConstTable.printConstNoArity(out, cref);
-	    if (arity > 0) {
-		out << "(";
-		state.markColumn();
-		state.incrementIndent();
+	    ConstRef fun = const_cast<Heap *>(this)->pushPrintStrArgs(cell);
+	    if (isSpecialFunctor(fun)) {
+		printIndent(out, state.addToColumn(1));
+		bool incIndent = false;
+		if (fun == thisFunctorComma) {
+		    out << "(";
+		    incIndent = true;
+		} else if (fun == thisFunctorDot) {
+		    out << "[";
+		    incIndent = true;
+		}
+		if (incIndent) {
+		    state.markColumn();
+		    state.incrementIndent();
+		}
+	    } else {
+		size_t arity = thisConstTable.getConstArity(fun);
+		printIndent(out, state.addToColumn(
+			   thisConstTable.getConstLength(fun)
+			   + ((arity > 0) ? 1 : 0)));
+		thisConstTable.printConstNoArity(out, fun);
+		if (arity > 0) {
+		    out << "(";
+		    state.markColumn();
+		    state.incrementIndent();
+		}
 	    }
 	    break;
 	    }
@@ -836,8 +950,12 @@ void Heap::print(std::ostream &out, Cell cell, const PrintParam &param) const
 	    if (state.getIndent() > 0 &&
 		state.willWrap(getStringLength(cell,
 					       state.willWrapOnLength()))) {
-		
 		state.newLine(out);
+	    }
+	    bool isRoot = false;
+	    const_cast<Heap *>(this)->pushPrintMapArgs(cell, isRoot);
+	    if (isRoot) {
+		printIndent(out, state.addToColumn(1));
 		out << "{";
 		state.markColumn();
 		state.incrementIndent();
@@ -860,21 +978,8 @@ void Heap::print(std::ostream &out, Cell cell, const PrintParam &param) const
 	     break;
 	    }
         case Cell::EXT:
-	    switch (cell.getExtTag()) {
-	    case Cell::EXT_END:
-		printIndent(out, state.addToColumn(1));
-		out << ")";
-		state.decrementIndent();
-		break;
-	    case Cell::EXT_COMMA:
-		printIndent(out, state.addToColumn(2));
-		out << ", ";
-		break;
-	    default:
-		printIndent(out, state.addToColumn(3));
-		out << "???";
-		break;
-	    }
+	    printIndent(out, state.addToColumn(3));
+	    out << "???";
 	    break;
 	}
     }
@@ -1183,8 +1288,8 @@ CellRef Heap::parseError(LocationTracker &loc, const std::string &reason)
 {
     ConstRef cref = thisConstTable.getConst("$parseError", 3);
     ConstRef creason = thisConstTable.getConst(reason.c_str(), 0);
-    newCon(creason);
-    CellRef reasonCon = newCon(creason);
+    newConOnHeap(creason);
+    CellRef reasonCon = newConOnHeap(creason);
     CellRef lineArg = newInt32(loc.getLine());
     CellRef colArg = newInt32(loc.getColumn());
     CellRef err = newStr(cref);
@@ -1641,11 +1746,8 @@ void Heap::findLive(size_t topSize)
 	    assert("Cell::FWD should not exist in this context."==NULL);
 	    break;
 	case Cell::EXT:
-	    switch (cell.getExtTag()) {
-	    case Cell::EXT_COMMA:
-	    case Cell::EXT_END:
-		break;
-	    }
+	    assert("Cell::EXT currently unused"==NULL);
+	    break;
 	}
     }
 }
@@ -1909,11 +2011,8 @@ void Heap::compactLive(size_t topSize, int verbosity)
 		break;
 	    }
 	case Cell::EXT:
-	    switch (cell.getExtTag()) {
-	    case Cell::EXT_COMMA:
-	    case Cell::EXT_END:
-		break;
-	    }
+	    assert("Cell::EXT currently unused"==NULL);
+	    break;
 	}
     }
 }
@@ -1921,8 +2020,9 @@ void Heap::compactLive(size_t topSize, int verbosity)
 CellRef Heap::newMap(size_t depth)
 {
     Cell *cellPtr = allocate(2);
-    cellPtr[0] = depth;
-    cellPtr[1] = 0;
+    MapNode mapNode(cellPtr);
+    mapNode.setMeta(true, depth, 0);
+    mapNode.setMask(0);
     Cell strCell(Cell::MAP, toRelative(cellPtr));
     return CellRef(*this, strCell);
 }
@@ -1933,14 +2033,15 @@ CellRef Heap::getArg32(CellRef mapCell, size_t index)
     assert(mapCell0.getTag() == Cell::MAP);
     HeapRef href = toHeapRef(mapCell0);
     Cell *cellPtr = toAbsolute(href);
-    uint32_t mask = static_cast<uint32_t>(cellPtr[1].getRawValue());
+    MapNode mapNode(cellPtr);
+    uint32_t mask = mapNode.getMask();
     if ((mask & (1 << index)) == 0) {
 	return CellRef(); // null
     }
     for (size_t i = 0, cnt = 0; i < 32; i++, mask >>= 1) {
 	if ((mask & 1) != 0) {
 	    if (index == i) {
-		return CellRef(*this, cellPtr[cnt]);
+		return CellRef(*this, mapNode.getArg(cnt));
 	    }
 	    cnt++;
 	}
@@ -1955,18 +2056,19 @@ CellRef Heap::setArg32(CellRef mapCell, size_t index, CellRef arg)
     assert(mapCell0.getTag() == Cell::MAP);
     HeapRef href = toHeapRef(mapCell0);
     Cell *cellPtr = toAbsolute(href);
-    uint32_t newMask = static_cast<uint32_t>(cellPtr[1].getRawValue())
-	               | (1 << index);
+    MapNode mapNode(cellPtr);
+    uint32_t newMask = mapNode.getMask() | (1 << index);
     size_t numArgs = bitCount(newMask);
     Cell *newCellPtr = allocate(2+numArgs);
-    newCellPtr[0] = cellPtr[0];
-    newCellPtr[1] = newMask;
+    MapNode newMapNode(newCellPtr);
+    newMapNode.setMeta(mapNode.getMeta());
+    newMapNode.setMask(newMask);
     for (size_t i = 0, cnt = 0, newCnt = 0; i < 32; i++, newMask >>= 1) {
 	if ((newMask & 1) != 0) {
 	    if (index == i) {
-		newCellPtr[newCnt] = *arg;
+		newMapNode.setArg(newCnt, *arg);
 	    } else {
-		newCellPtr[newCnt] = cellPtr[cnt];
+		newMapNode.setArg(newCnt, mapNode.getArg(cnt));
 		cnt++;
 	    }
 	    newCnt++;
@@ -1974,6 +2076,227 @@ CellRef Heap::setArg32(CellRef mapCell, size_t index, CellRef arg)
     }
     Cell newCell(Cell::MAP, toRelative(newCellPtr));
     return CellRef(*this, newCell);
+}
+
+bool Heap::equalDeep(Cell a, Cell b) const
+{
+    if (a.getTag() != b.getTag()) {
+	return false;
+    }
+    // We don't use recursion, so we can explicitly control stack size.
+    // (C++ stack will not be as efficient.)
+    size_t current = thisStack.getSize();
+
+    thisStack.push(b);
+    thisStack.push(a);
+
+    while (current != thisStack.getSize()) {
+	a = deref(thisStack.pop());
+	b = deref(thisStack.pop());
+
+	if (a.getTag() != b.getTag()) {
+	    thisStack.trim(current);
+	    return false;
+	}
+	
+	if (equalShallow(a,b)) {
+	    continue;
+	}
+
+	switch (a.getTag()) {
+	case Cell::STR:
+	    {
+		size_t a_arity = getArity(a);
+		size_t b_arity = getArity(b);
+		if (a_arity != b_arity) {
+		    thisStack.trim(current);
+		    return false;
+		}
+		for (size_t i = 0; i < a_arity; i++) {
+		    Cell aArg = getArg(a, i);
+		    Cell bArg = getArg(b, i);
+		    thisStack.push(bArg);
+		    thisStack.push(aArg);
+		}
+	    }
+	    break;
+	case Cell::MAP:
+	    {
+		assert("equalDeep(): Cell::MAP: TO BE IMPLEMENTED!"==NULL);
+		break;
+	    }
+	default:
+	    thisStack.trim(current);
+	    return false;
+	}
+    }
+    return true;
+}
+
+uint32_t Heap::hashOf(CellRef term)
+{
+    Hash hash;
+
+    // Traverse term and compute hash
+    Cell cell = *term;
+
+    size_t current = thisStack.getSize();
+
+    thisStack.push(cell);
+
+    while (current != thisStack.getSize()) {
+	cell = deref(thisStack.pop());
+	switch (cell.getTag()) {
+	case Cell::CON:
+	    {
+		ConstRef cref = cell.toConstRef();
+		ConstString cs = getConstName(cref);
+		size_t arity = thisConstTable.getConstArity(cref);
+		hash.update(cs.getString(), cs.getLength());
+		hash.update(static_cast<uint32_t>(arity));
+		break;
+	    }
+	case Cell::INT32:
+	    {
+		hash.update(static_cast<uint32_t>(toInt32(cell)));
+		break;
+	    }
+	case Cell::STR:
+	    {
+		break;
+	    }
+	case Cell::MAP:
+	    {
+		break;
+	    }
+	case Cell::REF:
+	    {
+		assert("Heap::hashOf(): Unbounded variables are not allowed in hash computations"==NULL);
+		break;
+	    }
+	case Cell::FWD:
+	    {
+		assert("Heap::hashOf(): Cell::FWD not allowed in hash computations"==NULL);
+		break;
+	    }
+	case Cell::EXT:
+	    {
+		assert("Heap::hashOf(): Cell::EXT unsupported");
+		break;
+	    }
+	}
+    }
+    return hash.finalize();
+}
+
+CellRef Heap::createNewSubMap(size_t depth, uint32_t hash,
+			      CellRef key, CellRef value)
+{
+    // We need to create this bottom up so we avoid forward pointers.
+
+    // First create a pair (key, value) which represents the leaf
+    CellRef tree = newStr(thisFunctorColon);
+    setArg(tree, 0, key);
+    setArg(tree, 1, value);
+
+    // Then build up the tree step by step.
+    for (size_t i = 0; i < depth; i++) {
+	size_t index = (hash >> (5 * (depth - i - 1))) & 0x1f;
+	Cell *cellPtr = allocate(3);
+	MapNode mapNode(cellPtr);
+	mapNode.setMeta(false, i+1, 1);
+	mapNode.setMask(1 << index);
+	mapNode.setArg(0, *tree);
+	tree = CellRef(*this, Cell(Cell::MAP, toRelative(cellPtr)));
+    }
+
+    return tree;
+}
+
+// Walk down the spine and non-destructively create a new table based
+// on the old.
+CellRef Heap::putMap(CellRef map, CellRef key, CellRef value)
+{
+    Cell mapCell = deref(*map);
+    Cell *cellPtr = toAbsolute(toHeapRef(mapCell));
+
+    MapNode mapNode(cellPtr);
+    size_t depth = mapNode.getDepth();
+    uint32_t hash = hashOf(key);
+
+    CellRef spine[8];
+
+    size_t i;
+    for (i = 0; i < depth; i++) {
+	spine[i] = CellRef(*this, mapCell);
+	size_t index = (hash >> (depth-i-1)*5) & 0x1f; // value between 0..31
+	uint32_t mask = mapNode.getMask();
+	if ((mask & (1 << index)) == 0) {
+	    // Bit is 0, so we need to create a new branch
+	    size_t subDepth = depth - i - 1;
+	    CellRef newTree = createNewSubMap(subDepth, hash, key, value);
+	    for (size_t j = 0; j <= i; j++) {
+		index = (hash >> 5*(i-j)) & 0x1f;
+		const CellRef &arg = spine[i-j];
+		newTree = setArg32(arg, index, newTree);
+		// We need to increment entry count
+		mapNode = MapNode(toAbsolute(toHeapRef(*newTree)));
+		mapNode.incrementCount();
+	    }
+	    return newTree;
+	} else {
+	    mapCell = *getArg32(CellRef(*this,mapCell), index);
+	    mapNode = MapNode(toAbsolute(toHeapRef(mapCell)));
+	}
+    }
+
+    // Adjust 'i' to depth - 1. Treat it as last iteration.
+    i--;
+    
+    // This means we've found an exact match. We need to check if
+    // the key is present. If not, then we need to add it.
+    // mapCell points to this leaf.
+    Cell lst = mapCell;
+    Cell searchKey = *key;
+    while (isDot(lst)) {
+	// Current cell is a non-empty list.
+	Cell keyValuePair = getArg(lst, 0);
+	Cell key1 = getArg(keyValuePair, 0);
+	if (equal(searchKey, key1)) {
+	    // TODO: We need a modified list.
+	    assert("TODO"==NULL);
+	}
+	lst = getArg(lst, 1);
+    }
+    bool isColon = isFunctor(lst, thisFunctorColon);
+
+    // We couldn't find it. So now we need to create a new entry
+    CellRef refMapCell(*this, mapCell);
+    CellRef keyValuePair = newStr(thisFunctorColon);
+    setArg(keyValuePair, 0, key);
+    setArg(keyValuePair, 1, value);
+
+    CellRef newTree;
+
+    if (isColon) {
+	// Create a list of two items.
+	newTree = newList(refMapCell, newCon(thisFunctorEmpty));
+	newTree = newList(keyValuePair, newTree);
+    } else {
+	// We have an existing list. Just add it to the front of the list.
+	newTree = newList(keyValuePair, refMapCell);
+    }
+    
+    // Then create the new spine
+    for (size_t j = 0; j <= i; j++) {
+	size_t index = (hash >> 5*(i-j)) & 0x1f;
+	const CellRef &arg = spine[i-j];
+	newTree = setArg32(arg, index, newTree);
+	// We need to increment entry count
+	mapNode = MapNode(toAbsolute(toHeapRef(*newTree)));
+	mapNode.incrementCount();
+    }
+    return newTree;
 }
 
 }
