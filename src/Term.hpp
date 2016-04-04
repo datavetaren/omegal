@@ -259,6 +259,8 @@ public:
     inline CellRef(const Heap &heap, Cell cell);
     inline ~CellRef();
 
+    inline const Heap & getHeap() const { return *thisHeap; }
+
     inline bool isEmpty() const { return thisHeap == NULL; }
 
     void operator = (const CellRef &other);
@@ -310,6 +312,8 @@ public:
 	}
 	return memcmp(thisString, other.thisString, getLength()*sizeof(Char)) == 0;
     }
+
+    int compare(const ConstString &other) const;
 
     friend std::ostream & operator << (std::ostream &out, const ConstString &str);
     static bool isReserved(const Char ch) {
@@ -543,10 +547,25 @@ public:
         return CellRef(*this, con);
     }
 
-    inline CellRef newCon(ConstRef constRef)
+    inline CellRef newConst(ConstRef constRef)
     {
 	Cell con(constRef);
 	return CellRef(*this, con);
+    }
+
+    inline CellRef newConst(const char *name, size_t arity)
+    {
+	return newConst(getConst(name, arity));
+    }
+
+    inline CellRef newConst(const char *name)
+    {
+	return newConst(name, 0);
+    }
+
+    inline CellRef newList()
+    {
+	return CellRef(*this, Cell(Cell::CON, thisFunctorEmpty));
     }
 
     inline CellRef newList(CellRef first, CellRef rest)
@@ -556,6 +575,31 @@ public:
 	setArg(lst, 1, rest);
 	return lst;
     }
+
+    inline CellRef newPair(CellRef first, CellRef second)
+    {
+	CellRef pair = newStr(thisFunctorColon);
+	setArg(pair, 0, first);
+	setArg(pair, 1, second);
+	return pair;
+    }
+
+    inline CellRef assocListNew()
+    {
+	return newList();
+    }
+
+    inline CellRef assocListAdd(CellRef list, CellRef key, CellRef value)
+    {
+	return newList(newPair(key, value), list);
+    }
+
+    inline CellRef assocListRemove(CellRef list, CellRef key)
+    {
+	return assocListReplace(list, key, CellRef());
+    }
+
+    CellRef assocListReplace(CellRef list, CellRef key, CellRef value);
 
     inline CellRef newStr(HeapRef strRef)
     {
@@ -577,10 +621,7 @@ public:
 
     inline void setArg(const CellRef &cellRef, size_t index, CellRef arg)
     {
-	Cell cell = *arg;
-	HeapRef href = getArgRef(cellRef, index);
-	setCell(href, cell);
-	checkForwardPointer(href, cell);
+	setArg(*cellRef, index, *arg);
     }
 
     inline bool isFunctor(const CellRef &cell, ConstRef functor) const
@@ -598,13 +639,32 @@ public:
 	return isDot(*cell);
     }
 
+    inline bool isPair(const CellRef &cell) const
+    {
+	return isPair(*cell);
+    }
+
     CellRef newMap(size_t depth);
     CellRef putMap(CellRef mapCell, CellRef key, CellRef value);
+    CellRef mapAsList(CellRef mapCell);
+    CellRef qsortList(CellRef list);
+    size_t lengthList(CellRef list);
 
 private:
+    inline void setArg(Cell cell, size_t index, Cell arg)
+    {
+	HeapRef href = getArgRef(cell, index);
+	setCell(href, arg);
+	checkForwardPointer(href, arg);
+    }
+
+    static int qsortCmp(void *heap, const void *a, const void *b);
+
     // Helper functions for maps (or associative arrays)
-    CellRef createNewSubMap(size_t depth, uint32_t hash,
-			    CellRef key, CellRef value);
+    CellRef mapCreateNewTree(size_t startDepth, size_t endDepth,
+			     uint32_t hash, CellRef key, CellRef value);
+    size_t mapGetSpine(CellRef map, CellRef key, uint32_t hash);
+    CellRef wrapSpine(CellRef tree, uint32_t hash);
     CellRef setArg32(CellRef mapCell, size_t index, CellRef arg);
     CellRef getArg32(CellRef mapCell, size_t index);
 
@@ -662,6 +722,11 @@ public:
     inline bool equal(CellRef a, CellRef b) const
     {
 	return equal(*a, *b);
+    }
+
+    inline bool compare(CellRef a, CellRef b) const
+    {
+	return compare(*a, *b);
     }
 
     size_t getStackSize() const;
@@ -844,36 +909,46 @@ private:
 
     inline bool equal(Cell a, Cell b) const
     {
-	if (equalShallow(a,b)) {
-	    return true;
+	return compare(a, b) == 0;
+    }
+
+    inline int compare(Cell a, Cell b) const
+    {
+	int cmp = compareShallow(a,b);
+	if (cmp != 0) {
+	    return cmp;
 	} else {
-	    return equalDeep(a,b);
+	    return compareDeep(a,b);
 	}
     }
 
-    inline bool equalShallow(Cell a, Cell b) const
+    int compareConst(Cell a, Cell b) const;
+    int compareInt32(Cell a, Cell b) const;
+    int compareRef(Cell a, Cell b) const;
+
+    inline int compareShallow(Cell a, Cell b) const
     {
 	a = deref(a);
 	b = deref(b);
 	if (a == b) {
-	    return true;
+	    return 0;
 	} else {
 	    if (a.getTag() != b.getTag()) {
-		return false;
+		return (a.getTag() < b.getTag()) ? -1 : 1;
 	    }
 	    switch (a.getTag()) {
-	    case Cell::CON: return false; // a == b should have been true
-	    case Cell::INT32: return getCell0(toHeapRef(a)) == getCell0(toHeapRef(b));
-	    case Cell::STR: return false;
-	    case Cell::MAP: return false;
-	    case Cell::REF: return false; // a == b should have been true
-	    case Cell::EXT: return false;
-	    case Cell::FWD: assert("Cell::FWD should not occur in this context"); return false;
+	    case Cell::CON: return compareConst(a,b);
+	    case Cell::INT32: return compareInt32(a,b);
+	    case Cell::STR: return 0; // Continue with compare deep
+	    case Cell::MAP: return 0; // Continue with compare deep
+	    case Cell::REF: return compareRef(a,b);
+	    case Cell::EXT: assert("Cell::EXT is unsupported"); return 0;
+	    case Cell::FWD: assert("Cell::FWD should not occur in this context"); return 0;
 	    }
 	}
     }
 
-    bool equalDeep(Cell a, Cell b) const;
+    int compareDeep(Cell a, Cell b) const;
 
     void pushRoots(HeapRef atStart, HeapRef atEnd, bool onGCStack);
     void updateRoots(HeapRef atStart, HeapRef atEnd);
@@ -947,6 +1022,7 @@ private:
 
     inline bool isFunctor(Cell cell, ConstRef functor) const
     {
+	cell = deref(cell);
 	switch (cell.getTag()) {
 	case Cell::CON: return cell.toConstRef() == functor;
 	case Cell::STR: cell = deref(getCell0(toHeapRef(cell)));
@@ -965,6 +1041,11 @@ private:
     inline bool isDot(Cell cell) const
     {
 	return isFunctor(cell, thisFunctorDot);
+    }
+
+    inline bool isPair(Cell cell) const
+    {
+	return isFunctor(cell, thisFunctorColon);
     }
 
     size_t getStringLength(Cell cell, size_t maximum) const;

@@ -11,8 +11,14 @@ namespace PROJECT {
 
 // Map node facade (this is what the MAP cell is pointing at)
 // [1 bit]: if root yes/no
-// [3 bits]: for depth
+// [3 bits]: for depth, but 111 (= 7) is reserved as "super root".
 // [28 bits]: count
+//
+// A super root means that the MAP object represents a family of
+// MAP roots. This allows lazy growing the hash array mapped trie
+// (and avoids rehashing.) If the MapNode is a meta root, then the
+// mask represents whether a map exists for depth 1, 2, 3, ...
+//
 //
 class MapNode
 {
@@ -24,9 +30,12 @@ public:
 
     inline void setMeta(uint32_t meta)
         { thisCellPtr[0].setRawValue(meta); }
-
     inline void setMeta(bool isRoot, size_t depth, size_t count)
     { thisCellPtr[0].setRawValue((isRoot ? 1 : 0) | ((depth & 0x7) << 1) | (count << 4)); }
+    inline bool isSuperRoot() const
+    { return isRoot() && (((getMeta() >> 1) & 0x7) == 0x7); }
+    inline void setSuperRoot()
+    { thisCellPtr[0].setRawValue(1 | (0x7 << 1)); }
 
     inline bool isRoot() const
     { return (getMeta() & 1) != 0; }
@@ -38,6 +47,8 @@ public:
     { setMeta(isRoot(), getDepth(), getCount() + count); }
     inline void incrementCount()
     { setCount(getCount()+1); }
+    inline void decrementCount()
+    { setCount(getCount()-1); }
 
     inline uint32_t getMask() const
     { return static_cast<uint32_t>(thisCellPtr[1].getRawValue()); }
@@ -225,6 +236,32 @@ template<typename T> size_t ConstString::escapeName(const T *name, size_t len, c
     }
     if (escapedName != NULL) escapedName[j] = '\0';
     return j;
+}
+
+int ConstString::compare(const ConstString &other) const
+{
+    int min = std::min(getLength(), other.getLength());
+    for (size_t i = 0; i < min; i++) {
+	if (thisString[i] != other.thisString[i]) {
+	    if (thisString[i] < other.thisString[i]) {
+		return -1;
+	    } else {
+		return 1;
+	    }
+	}
+    }
+    if (getLength() < other.getLength()) {
+	return -1;
+    } else if (getLength() > other.getLength()) {
+	return 1;
+    }
+    if (getArity() < other.getArity()) {
+	return -1;
+    } else if (getArity() > other.getArity()) {
+	return 1;
+    } else {
+	return 0;
+    }
 }
 
 std::ostream & operator << (std::ostream &out, const ConstString &str)
@@ -823,13 +860,16 @@ void Heap::pushPrintMapArgs(Cell mapCell, bool &isRoot)
 	thisStack.push(thisPrintRBrace);
     }
     uint32_t mask = mapNode.getMask();
-    for (size_t i = 0, cnt = 0; i < 32; i++) {
-	if ((mask & (1 << i)) != 0) {
-	    if (cnt > 0) {
+    size_t cnt = bitCount(mask);
+    bool first = true;
+    for (size_t i = 0; i < 32; i++) {
+	if ((mask & (1 << (31-i))) != 0) {
+	    if (!first) {
 		thisStack.push(thisPrintComma);
 	    }
-	    thisStack.push(mapNode.getArg(cnt));
-	    cnt++;
+	    first = false;
+	    thisStack.push(mapNode.getArg(cnt-1));
+	    cnt--;
 	}
     }
 }
@@ -1083,8 +1123,7 @@ CellRef Heap::parseConst(std::istream &in, LocationTracker &loc)
     }
     constName[i] = '\0';
 
-    ConstRef cref = getConst(constName, 0);
-    return newCon(cref);
+    return newConst(constName, 0);
 }
 
 bool Heap::parseCheck(int lookahead, Expect expect)
@@ -2057,31 +2096,94 @@ CellRef Heap::setArg32(CellRef mapCell, size_t index, CellRef arg)
     HeapRef href = toHeapRef(mapCell0);
     Cell *cellPtr = toAbsolute(href);
     MapNode mapNode(cellPtr);
-    uint32_t newMask = mapNode.getMask() | (1 << index);
+    uint32_t oldMask = mapNode.getMask();
+    bool toRemove = arg->isNull();
+
+    uint32_t newMask = 0;
+    if (toRemove) {
+	// Remove element
+	newMask = oldMask & ~(1 << index);
+    } else {
+	newMask = oldMask | (1 << index);
+    }
     size_t numArgs = bitCount(newMask);
     Cell *newCellPtr = allocate(2+numArgs);
     MapNode newMapNode(newCellPtr);
     newMapNode.setMeta(mapNode.getMeta());
     newMapNode.setMask(newMask);
-    for (size_t i = 0, cnt = 0, newCnt = 0; i < 32; i++, newMask >>= 1) {
+    for (size_t i = 0, cnt = 0, newCnt = 0;
+	 i < 32; i++,
+	     newMask >>= 1, oldMask >>= 1) {
 	if ((newMask & 1) != 0) {
 	    if (index == i) {
 		newMapNode.setArg(newCnt, *arg);
 	    } else {
 		newMapNode.setArg(newCnt, mapNode.getArg(cnt));
-		cnt++;
 	    }
 	    newCnt++;
 	}
+	if ((oldMask & 1) != 0) cnt++;
     }
     Cell newCell(Cell::MAP, toRelative(newCellPtr));
     return CellRef(*this, newCell);
 }
 
-bool Heap::equalDeep(Cell a, Cell b) const
+int Heap::compareConst(Cell a, Cell b) const
+{
+    ConstRef aCon = a.toConstRef();
+    ConstRef bCon = b.toConstRef();
+    ConstString aStr = getConstName(aCon);
+    ConstString bStr = getConstName(bCon);
+    int cmp = aStr.compare(bStr);
+    if (cmp != 0) {
+	return cmp;
+    }
+    size_t aArity = getArity(aCon);
+    size_t bArity = getArity(bCon);
+    if (aArity != bArity) {
+	if (aArity < bArity) {
+	    return -1;
+	} else {
+	    return 1;
+	}
+    }
+    return 0;
+}
+
+int Heap::compareInt32(Cell a, Cell b) const
+{
+    int32_t aInt = toInt32(a);
+    int32_t bInt = toInt32(b);
+    if (aInt < bInt) {
+	return -1;
+    } else if (aInt > bInt) {
+	return 1;
+    } else {
+	return 0;
+    }
+}
+
+int Heap::compareRef(Cell a, Cell b) const
+{
+    HeapRef aRef = toHeapRef(a);
+    HeapRef bRef = toHeapRef(b);
+    if (aRef < bRef) {
+	return -1;
+    } else if (aRef > bRef) {
+	return 1;
+    } else {
+	return 0;
+    }
+}
+
+int Heap::compareDeep(Cell a, Cell b) const
 {
     if (a.getTag() != b.getTag()) {
-	return false;
+	if (a.getTag() < b.getTag()) {
+	    return -1;
+	} else {
+	    return 1;
+	}
     }
     // We don't use recursion, so we can explicitly control stack size.
     // (C++ stack will not be as efficient.)
@@ -2096,25 +2198,41 @@ bool Heap::equalDeep(Cell a, Cell b) const
 
 	if (a.getTag() != b.getTag()) {
 	    thisStack.trim(current);
-	    return false;
+	    if (a.getTag() < b.getTag()) {
+		return -1;
+	    } else {
+		return 1;
+	    }
 	}
 	
-	if (equalShallow(a,b)) {
-	    continue;
+	int cmp = compareShallow(a,b);
+	if (cmp != 0) {
+	    thisStack.trim(current);
+	    return cmp;
 	}
 
 	switch (a.getTag()) {
+	case Cell::CON: // Must be equal (otherwise compareShallow != 0)
+	    break;
 	case Cell::STR:
 	    {
+		ConstString aName = getConstName(getFunctor(a).toConstRef());
+		ConstString bName = getConstName(getFunctor(b).toConstRef());
+		int cmp = aName.compare(bName);
+		if (cmp != 0) {
+		    thisStack.trim(current);
+		    return cmp;
+		}
+
 		size_t a_arity = getArity(a);
 		size_t b_arity = getArity(b);
 		if (a_arity != b_arity) {
 		    thisStack.trim(current);
-		    return false;
+		    return (a_arity < b_arity) ? -1 : 1;
 		}
 		for (size_t i = 0; i < a_arity; i++) {
-		    Cell aArg = getArg(a, i);
-		    Cell bArg = getArg(b, i);
+		    Cell aArg = getArg(a, a_arity - i - 1);
+		    Cell bArg = getArg(b, a_arity - i - 1);
 		    thisStack.push(bArg);
 		    thisStack.push(aArg);
 		}
@@ -2127,10 +2245,11 @@ bool Heap::equalDeep(Cell a, Cell b) const
 	    }
 	default:
 	    thisStack.trim(current);
-	    return false;
+	    assert("equalDeep(): Cell::???: TO BE IMPLEMENTED!"==NULL);
+	    break;
 	}
     }
-    return true;
+    return 0;
 }
 
 uint32_t Heap::hashOf(CellRef term)
@@ -2189,22 +2308,53 @@ uint32_t Heap::hashOf(CellRef term)
     return hash.finalize();
 }
 
-CellRef Heap::createNewSubMap(size_t depth, uint32_t hash,
-			      CellRef key, CellRef value)
+CellRef Heap::assocListReplace(CellRef list, CellRef key, CellRef value)
+{
+    size_t markStack = getStackSize();
+    Cell lst = *list;
+    while (isDot(lst)) {
+	Cell pair = getArg(lst, 0);
+	lst = getArg(lst, 1);
+	Cell key1 = getArg(pair, 0);
+	if (equal(key1, *key)) {
+	    CellRef result = CellRef(*this, lst);
+	    // If value is null, we should just drop the found pair.
+	    if (!value->isNull()) {
+		result = newList(newPair(key,value), result);
+	    }
+	    while (markStack != getStackSize()) {
+		CellRef next(*this, thisStack.pop());
+		result = newList(next, result);
+	    }
+	    return result;
+	}
+	thisStack.push(pair);
+    }
+    // We couldn't find it, so discard pushed elements on stack and
+    // add it first to list
+    thisStack.trim(markStack);
+    if (value->isNull()) {
+	return list;
+    } else {
+	return assocListAdd(key, value, list);
+    }
+}
+
+CellRef Heap::mapCreateNewTree(size_t startDepth, size_t endDepth,
+			       uint32_t hash, CellRef key, CellRef value)
 {
     // We need to create this bottom up so we avoid forward pointers.
 
     // First create a pair (key, value) which represents the leaf
-    CellRef tree = newStr(thisFunctorColon);
-    setArg(tree, 0, key);
-    setArg(tree, 1, value);
+    CellRef tree = newPair(key, value);
 
     // Then build up the tree step by step.
-    for (size_t i = 0; i < depth; i++) {
-	size_t index = (hash >> (5 * (depth - i - 1))) & 0x1f;
+    for (size_t i = startDepth; i < endDepth; i++) {
+	size_t index = (hash >> (5 * (i-startDepth))) & 0x1f;
+	// std::cout << "  NEWTREE: index=" << index << "\n";
 	Cell *cellPtr = allocate(3);
 	MapNode mapNode(cellPtr);
-	mapNode.setMeta(false, i+1, 1);
+	mapNode.setMeta(false, i-startDepth+1, 1);
 	mapNode.setMask(1 << index);
 	mapNode.setArg(0, *tree);
 	tree = CellRef(*this, Cell(Cell::MAP, toRelative(cellPtr)));
@@ -2213,90 +2363,179 @@ CellRef Heap::createNewSubMap(size_t depth, uint32_t hash,
     return tree;
 }
 
-// Walk down the spine and non-destructively create a new table based
-// on the old.
-CellRef Heap::putMap(CellRef map, CellRef key, CellRef value)
+size_t Heap::mapGetSpine(CellRef map, CellRef key, uint32_t hash)
 {
     Cell mapCell = deref(*map);
-    Cell *cellPtr = toAbsolute(toHeapRef(mapCell));
-
-    MapNode mapNode(cellPtr);
+    MapNode mapNode(toAbsolute(toHeapRef(mapCell)));
     size_t depth = mapNode.getDepth();
-    uint32_t hash = hashOf(key);
-
-    CellRef spine[8];
-
-    size_t i;
-    for (i = 0; i < depth; i++) {
-	spine[i] = CellRef(*this, mapCell);
+    
+    for (size_t i = 0; i < depth; i++) {
+	thisStack.push(mapCell);
 	size_t index = (hash >> (depth-i-1)*5) & 0x1f; // value between 0..31
+	// std::cout << "   GET SPINE: INDEX=" << index << "\n";
+	mapNode = MapNode(toAbsolute(toHeapRef(mapCell)));
 	uint32_t mask = mapNode.getMask();
 	if ((mask & (1 << index)) == 0) {
-	    // Bit is 0, so we need to create a new branch
-	    size_t subDepth = depth - i - 1;
-	    CellRef newTree = createNewSubMap(subDepth, hash, key, value);
-	    for (size_t j = 0; j <= i; j++) {
-		index = (hash >> 5*(i-j)) & 0x1f;
-		const CellRef &arg = spine[i-j];
-		newTree = setArg32(arg, index, newTree);
-		// We need to increment entry count
-		mapNode = MapNode(toAbsolute(toHeapRef(*newTree)));
-		mapNode.incrementCount();
-	    }
-	    return newTree;
+	    // std::cout << "    EMPTY!\n";
+	    return i+1;
 	} else {
+	    // std::cout << "    NON-EMPTY!\n";
 	    mapCell = *getArg32(CellRef(*this,mapCell), index);
-	    mapNode = MapNode(toAbsolute(toHeapRef(mapCell)));
+	}
+    }
+    thisStack.push(mapCell);
+    return depth+1;
+}
+
+CellRef Heap::wrapSpine(CellRef tree, uint32_t hash)
+{
+    bool cont = true;
+    while (cont) {
+	Cell cell = thisStack.pop();
+	CellRef cellRef(*this, cell);
+	Cell *cellPtr = toAbsolute(toHeapRef(cell));
+	MapNode mapNode(cellPtr);
+	size_t depth = mapNode.getDepth();
+	cont = !mapNode.isRoot();
+	size_t index = (hash >> 5*(depth-1)) & 0x1f;
+	// std::cout << "  WRAP SPINE: INDEX=" << index << "\n";
+
+	// Last item to be removed?
+	if (tree->isNull() && mapNode.getMask() == 1 << index) {
+	    // Do noting
+	} else {
+	    tree = setArg32(cellRef, index, tree);
+	}
+    }
+    return tree;
+}
+
+// Walk down the spine and non-destructively create a new table based
+// on the old. If 'value' is null, then this operation will remove the
+// key.
+CellRef Heap::putMap(CellRef map, CellRef key, CellRef value)
+{
+    size_t stackMark = getStackSize();
+
+    uint32_t hash = hashOf(key);
+    // std::cout << "HASH: " << hash << "\n";
+
+    Cell mapCell = deref(*map);
+    MapNode mapNode(toAbsolute(toHeapRef(mapCell)));
+    size_t depth = mapNode.getDepth();
+    size_t spineDepth = mapGetSpine(map, key, hash);
+
+    if (spineDepth != depth + 1) {
+	// We couldn't find it, so create a new subtree (if value != null)
+	if (value->isNull()) {
+	    thisStack.trim(stackMark);
+	    return map;
+	}
+	CellRef newTree = mapCreateNewTree(spineDepth, depth, hash, key, value);
+	return wrapSpine(newTree, hash);
+    }
+
+    // We've found the entire spine (= a collision)
+    CellRef leaf(*this, thisStack.pop());
+    // std::cout << "LEAF IS: " << toString(leaf) << "\n";
+   
+    if (isPair(leaf)) {
+	// Shall we create a new list?
+	CellRef key1 = getArg(leaf, 0);
+	if (equal(key,key1)) {
+	    CellRef newLeaf;
+	    if (!value->isNull()) {
+		newLeaf = newPair(key,value);
+	    }
+	    return wrapSpine(newLeaf, hash);
+	} else {
+	    // Create a list with two elements
+	    CellRef newLeaf = newList(newPair(key,value),
+				      newList(leaf, newList()));
+	    return wrapSpine(newLeaf, hash);
 	}
     }
 
-    // Adjust 'i' to depth - 1. Treat it as last iteration.
-    i--;
-    
-    // This means we've found an exact match. We need to check if
-    // the key is present. If not, then we need to add it.
-    // mapCell points to this leaf.
-    Cell lst = mapCell;
-    Cell searchKey = *key;
-    while (isDot(lst)) {
-	// Current cell is a non-empty list.
-	Cell keyValuePair = getArg(lst, 0);
-	Cell key1 = getArg(keyValuePair, 0);
-	if (equal(searchKey, key1)) {
-	    // TODO: We need a modified list.
-	    assert("TODO"==NULL);
+    CellRef newLeaf = assocListReplace(leaf, key, value);
+    if (*leaf == *newLeaf) {
+	// No change. Then we can discard everything and return
+	thisStack.trim(stackMark);
+	return map;
+    }
+    return wrapSpine(newLeaf, hash);
+}
+
+CellRef Heap::mapAsList(CellRef map)
+{
+    CellRef lst = newList();
+
+    size_t stackMark = getStackSize();
+    thisStack.push(*map);
+
+    while (stackMark != getStackSize()) {
+	Cell cell = deref(thisStack.pop());
+	if (cell.getTag() == Cell::MAP) {
+	    MapNode mapNode(toAbsolute(toHeapRef(cell)));
+	    size_t cnt = 0;
+	    for (uint32_t mask = mapNode.getMask(); mask != 0; mask >>= 1) {
+		if ((mask & 1) != 0) {
+		    Cell arg = mapNode.getArg(cnt);
+		    thisStack.push(arg);
+		    cnt++;
+		}
+	    }
+	} else {
+	    lst = newList(CellRef(*this, cell), lst);
 	}
-	lst = getArg(lst, 1);
     }
-    bool isColon = isFunctor(lst, thisFunctorColon);
 
-    // We couldn't find it. So now we need to create a new entry
-    CellRef refMapCell(*this, mapCell);
-    CellRef keyValuePair = newStr(thisFunctorColon);
-    setArg(keyValuePair, 0, key);
-    setArg(keyValuePair, 1, value);
+    return lst;
+}
 
-    CellRef newTree;
-
-    if (isColon) {
-	// Create a list of two items.
-	newTree = newList(refMapCell, newCon(thisFunctorEmpty));
-	newTree = newList(keyValuePair, newTree);
-    } else {
-	// We have an existing list. Just add it to the front of the list.
-	newTree = newList(keyValuePair, refMapCell);
+size_t Heap::lengthList(CellRef lst)
+{
+    Cell l = *lst;
+    size_t cnt = 0;
+    while (isDot(l)) {
+	l = getArg(l, 1);
+	cnt++;
     }
-    
-    // Then create the new spine
-    for (size_t j = 0; j <= i; j++) {
-	size_t index = (hash >> 5*(i-j)) & 0x1f;
-	const CellRef &arg = spine[i-j];
-	newTree = setArg32(arg, index, newTree);
-	// We need to increment entry count
-	mapNode = MapNode(toAbsolute(toHeapRef(*newTree)));
-	mapNode.incrementCount();
+    return cnt;
+}
+
+int Heap::qsortCmp(void *heap0, const void *a, const void *b)
+{
+    Heap *heap = reinterpret_cast<Heap *>(heap0);
+    const Cell *aCell = reinterpret_cast<const Cell *>(a);
+    const Cell *bCell = reinterpret_cast<const Cell *>(b);
+
+    int cmp = heap->compare(*aCell, *bCell);
+    return cmp;
+}
+
+CellRef Heap::qsortList(CellRef lst)
+{
+    size_t n = lengthList(lst);
+    ConstRef arrayConst = getConst("array", n);
+    CellRef arrayRef = newStr(arrayConst);
+    Cell lst0 = *lst;
+    size_t i = 0;
+    while (isDot(lst0)) {
+	Cell arg = getArg(lst0, 0);
+	setArg(*arrayRef, i, arg);
+	lst0 = getArg(lst0, 1);
+	i++;
     }
-    return newTree;
+    qsort_r(toAbsolute(toHeapRef(*arrayRef)+1), n, sizeof(Cell), this, qsortCmp);
+
+    CellRef newLst = newList();
+    // Build sorted list
+    for (size_t i = 0; i < n; i++) {
+	CellRef cell = getArg(arrayRef, n-i-1);
+	newLst = newList(cell, newLst);
+    }
+
+    return newLst;
 }
 
 }

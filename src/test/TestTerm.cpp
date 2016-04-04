@@ -1,6 +1,7 @@
 #include <iostream>
 #include <assert.h>
 #include <vector>
+#include <map>
 #include "../Term.hpp"
 #include "../Hash.hpp"
 
@@ -526,15 +527,8 @@ void testUnifyBig(double gcFactor, bool withForwards, int verbosity = 1)
     assert(ss7.str() == ss6.str());
 }
 
-class Xyz {
-public:
-    Xyz(int x) {
-	q = x;
-	std::cout << "Where is " << (void *)&q << "\n";
-    }
-private:
-    int q;
-};
+
+
 
 //
 // HAMT thoughts
@@ -546,32 +540,129 @@ private:
 //
 // Should be possible
 
+static void printMap(CellRef map)
+{
+    const Heap &heap = map.getHeap();
+    PrintParam param;
+    param.setMaxWidth(78-param.getStartColumn());
+    std::cout << "MAP: ";
+    heap.print(std::cout, map, param);
+    std::cout << "\n";
+}
+
+void testAssocList()
+{
+    std::cout << "-------- testAssocList() -------------------\n";
+
+    Heap heap;
+    
+    std::string s;
+
+    CellRef lst = heap.newList();
+
+    std::cout << "List: " << (s = heap.toString(lst)) << "\n";
+    assert(s == "[]");
+
+    lst = heap.assocListAdd(lst, heap.newConst("foo"), heap.newConst("bar"));
+
+    std::cout << "List: " << (s = heap.toString(lst)) << "\n";
+    assert(s == "[foo:bar]");
+
+    lst = heap.assocListAdd(lst, heap.newConst("xyz"), heap.newConst("abc"));
+
+    std::cout << "List: " << (s = heap.toString(lst)) << "\n";
+    assert(s == "[xyz:abc, foo:bar]");
+
+    lst = heap.assocListReplace(lst, heap.newConst("foo"), heap.newConst("xxx"));
+
+    std::cout << "List: " << (s = heap.toString(lst)) << "\n";
+    assert(s == "[xyz:abc, foo:xxx]");
+
+    lst = heap.assocListAdd(lst, heap.newConst("gug"), heap.newConst("yep"));
+
+    std::cout << "List: " << (s = heap.toString(lst)) << "\n";
+    assert(s == "[gug:yep, xyz:abc, foo:xxx]");
+
+    lst = heap.assocListRemove(lst, heap.newConst("xyz"));
+
+    std::cout << "List: " << (s = heap.toString(lst)) << "\n";
+    assert(s == "[gug:yep, foo:xxx]");
+}
+
+static std::string toString(std::map<std::string, std::string> &map)
+{
+    std::stringstream ss;
+    ss << "[";
+    bool first = true;
+    for (std::map<std::string, std::string>::iterator it = map.begin();
+	 it != map.end(); ++it) {
+	if (!first) ss << ", ";
+	ss << it->first << ":" << it->second;
+	first = false;
+    }
+    ss << "]";
+    return ss.str();
+}
+
+static void normalizeString(std::string &s)
+{
+    size_t n = s.length();
+    size_t j = 0;
+    bool lastSpace = false;
+    for (size_t i = 0; i < n; i++) {
+	if (isspace(s[i])) {
+	    if (lastSpace) {
+		continue;
+	    }
+	    lastSpace = true;
+	}
+	s[j] = s[i];
+	j++;
+    }
+    s.resize(j);
+}
+
 void testMap1()
 {
     printf("-------- testMap1() ------------------------\n");
 
+    std::map<std::string, std::string> refMap;
+
     Heap heap;
 
     CellRef map = heap.newMap(5);
-    for (size_t i = 0; i < 20; i++) {
+    for (size_t i = 0; i < 100; i++) {
 	char key[32];
 	char val[32];
-	sprintf(key, "key%lu", i);
-	sprintf(val, "val%lu", i);
+	sprintf(key, "key%lu", myRand(100));
+	sprintf(val, "val%lu", myRand(100));
 	ConstRef keyConst = heap.getConst(key, 0);
 	ConstRef valConst = heap.getConst(val, 0);
 
-	CellRef keyCell = heap.newCon(keyConst);
-	CellRef valCell = heap.newCon(valConst);
-	// std::cout << "HASH VALUE: " << heap.hashOf(keyCell) << " 5 bits=" << (heap.hashOf(keyCell) & 0x1f) << "\n";
-	map = heap.putMap(map, keyCell, valCell);
+	CellRef keyCell = heap.newConst(keyConst);
+	CellRef valCell = heap.newConst(valConst);
 
-	PrintParam param;
-	param.setMaxWidth(78-param.getStartColumn());
-	std::cout << "MAP: ";
-	heap.print(std::cout, map, param);
-	std::cout << "\n";
+	std::cout << "Adding " << key << ":" << val << "\n";
+
+	map = heap.putMap(map, keyCell, valCell);
+	refMap[key] = val;
+
+	CellRef mapList = heap.qsortList(heap.mapAsList(map));
+	std::string refMapStr = toString(refMap);
+	std::string heapMapStr = heap.toString(mapList);
+	normalizeString(refMapStr);
+	normalizeString(heapMapStr);
+
+	if (refMapStr != heapMapStr) {
+	    std::cout << "REF: " << refMapStr << "\n";
+	    std::cout << "MAP: " << heapMapStr << "\n";
+	}
+
+	assert(refMapStr == heapMapStr);
     }
+
+    std::cout << ">> DONE ---\n";
+    printMap(map);
 }
 
 int main(int argc, char *argv[] )
@@ -595,6 +686,7 @@ int main(int argc, char *argv[] )
     testUnifyBig(0.8, false, 1);
     testUnifyBig(1.0, false, 1);
 
+    testAssocList();
     testMap1();
 
     return 0;
