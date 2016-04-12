@@ -141,7 +141,7 @@ public:
     inline HeapRef(const HeapRef &other) : Index(other) { }
     inline ~HeapRef() { }
 
-    inline bool isEmpty() const { return getIndex() == 0; }
+    inline bool isNull() const { return getIndex() == 0; }
 
     inline void operator = (const HeapRef &other)
     { setIndex(other.getIndex()); }
@@ -220,7 +220,7 @@ template<> struct HashOf<ConstRef> {
  */
 class Cell {
 public:
-    enum Tag { REF = 0, CON = 1, STR = 2, MAP = 3, INT32 = 5, FWD = 6, EXT = 7 };
+    enum Tag { REF = 0, CON = 1, STR = 2, MAP = 3, INT32 = 5, FWD = 6, REFARG = 6, EXT = 7 };
     enum ExtTag { };
 
     inline Cell() : thisCell(0) { }
@@ -485,9 +485,12 @@ private:
 
 class PrintState;
 class LocationTracker;
+class HeapTest;
 
 class Heap {
 public:
+    friend class HeapTest;
+
     Heap(size_t capacity = 65536);
 
     void setStrict(bool strict);
@@ -576,6 +579,8 @@ public:
 	return lst;
     }
 
+    CellRef appendList(CellRef list1, CellRef list2);
+
     inline CellRef newPair(CellRef first, CellRef second)
     {
 	CellRef pair = newStr(thisFunctorColon);
@@ -600,6 +605,7 @@ public:
     }
 
     CellRef assocListReplace(CellRef list, CellRef key, CellRef value);
+    CellRef assocListFind(CellRef list, CellRef key);
 
     inline CellRef newStr(HeapRef strRef)
     {
@@ -616,6 +622,20 @@ public:
 	HeapRef href(toRelative(cellPtr));
 	*cellPtr = Cell(functor);
 	Cell strCell(Cell::STR, toRelative(cellPtr));
+	return CellRef(*this, strCell);
+    }
+
+    CellRef newTerm(ConstRef functor)
+    {
+	size_t numArgs = thisConstTable.getConstArity(functor);
+	Cell *cellPtr = allocate(1+numArgs);
+	HeapRef href(toRelative(cellPtr));
+	*cellPtr = Cell(functor);
+	Cell strCell(Cell::STR, href);
+	for (size_t i = 0; i < numArgs; i++) {
+	    HeapRef argRef = getArgRef(strCell, i);
+	    setArg(strCell, i, Cell(Cell::REF, argRef));
+	}
 	return CellRef(*this, strCell);
     }
 
@@ -646,6 +666,7 @@ public:
 
     CellRef newMap(size_t depth);
     CellRef putMap(CellRef mapCell, CellRef key, CellRef value);
+    CellRef getMap(CellRef mapCell, CellRef key);
     CellRef mapAsList(CellRef mapCell);
     CellRef qsortList(CellRef list);
     size_t lengthList(CellRef list);
@@ -741,6 +762,11 @@ public:
 	return static_cast<int32_t>(toAbsolute(cell.getValue())->getRawValue());
     }
 
+    inline void printCell(std::ostream &out, CellRef cell) const
+    {
+	printCell(out, *cell);
+    }
+
     void printCell(std::ostream &out, Cell cell) const;
 
     inline bool hasHeapRef(Cell cell) const
@@ -758,6 +784,11 @@ public:
 	    assert("Heap::hasHeapRef(): Invalid TAG"==NULL);
 	    return false;
 	}
+    }
+
+    inline HeapRef toHeapRef(CellRef cell) const
+    {
+	return toHeapRef(*cell);
     }
 
     inline HeapRef toHeapRef(Cell cell) const
@@ -801,7 +832,7 @@ public:
 
     // ----------------------------------------------------------
 
-    void gc(size_t topSize, int verbosity = 0);
+    void gc(size_t topSize = 0, int verbosity = 0);
     void gc(double percentage, int verbosity = 0);
 
 private:
@@ -812,29 +843,36 @@ private:
 	return (((w + (w >> 4)) & 0x0F0F0F0F) * 0x01010101) >> 24;
     }
 
-    inline void checkForwardPointer(HeapRef href, Cell cell)
+    inline bool isForwardPointer(HeapRef href, Cell cell)
     {
 	switch (cell.getTag()) {
 	case Cell::CON:
 	case Cell::FWD:
-	    break;
+	    return false;
 	case Cell::STR:
 	case Cell::REF:
 	case Cell::INT32:
 	case Cell::MAP:
 	    {
 		HeapRef dst = toHeapRef(cell);
-		if (dst > href) {
-		    createForwardPointer(href, dst);
-		}
+		return dst > href;
 	    }
-	    break;
 	case Cell::EXT:
-	    break;
+	    return false;
 	}
     }
 
-    void createForwardPointer(HeapRef from, HeapRef to);
+    inline void checkForwardPointer(HeapRef href, Cell cell)
+    {
+	if (isForwardPointer(href, cell)) {
+	    HeapRef dst = toHeapRef(cell);
+	    if (!thisForwardPointers.hasBit(href.getIndex())) {
+		createForwardPointer(href);
+	    }
+	}
+    }
+
+    void createForwardPointer(HeapRef from);
 
     inline void setCell(HeapRef ref, Cell cell)
     {
@@ -950,22 +988,24 @@ private:
 
     int compareDeep(Cell a, Cell b) const;
 
-    void pushRoots(HeapRef atStart, HeapRef atEnd, bool onGCStack);
+    void pushRoots(HeapRef atStart, HeapRef atEnd);
     void updateRoots(HeapRef atStart, HeapRef atEnd);
     Cell followFwd(Cell cell);
     void resetFreePointers(HeapRef atStart);
-    HeapRef findFreeSlot(size_t numCells) const;
-    HeapRef findFreeSlotBound(size_t numCells, HeapRef oldLoc) const;
+    HeapRef findFreeSlot(size_t numCells, HeapRef bound);
     bool updateForward(HeapRef cell);
 
-    void initiateGC(size_t topSize);
-    void finalizeGC(size_t topSize);
-    void findLive(size_t topSize);
+    void initiateGC(HeapRef fromHeapRef);
+    void finalizeGC(HeapRef fromHeapRef);
+    void findLive(HeapRef fromHeapRef);
     void compactMove(HeapRef from, size_t numCells, HeapRef to, int verbosity);
-    void compactMove0(HeapRef from, size_t numCells, HeapRef to,int verbosity);
 
-    void compactLive(size_t topSize, int verbosity);
-    void printLive(std::ostream &out, size_t topSize) const;
+    enum Mode { COMPACT_MOVE, COMPACT_UPDATE_FWD };
+
+    bool isRefArg(HeapRef href) const;
+    void compactLive(Mode mode, HeapRef fromHeapRef, int verbosity);
+    void compactForwardPointers(HeapRef fromHeapRef, int verbosity);
+    void printLive(std::ostream &out, HeapRef fromHeapRef) const;
 
 public:
 
@@ -1033,6 +1073,11 @@ private:
 	}
     }
 
+    inline bool isList(Cell cell) const
+    {
+	return isDot(cell) || isEmpty(cell);
+    }
+
     inline bool isEmpty(Cell cell) const
     {
 	return isFunctor(cell, thisFunctorEmpty);
@@ -1082,7 +1127,7 @@ private:
     void bind(Cell a, Cell b);
 
     void pushState();
-    void popState();
+    void popState(bool unbind);
     void discardState();
 
     struct State {
@@ -1092,6 +1137,7 @@ private:
 	bool thisUseTrail;
     };
 
+    bool thisInGC;
     GrowingAllocator<Cell> thisHeap;
     bool thisIsStrict;
     BitMap thisForwardPointers;
@@ -1099,10 +1145,9 @@ private:
     BitMap thisVisited;
     HeapRef thisCompactedEnd;
     static const size_t TRACK_SIZES = 256;
-    mutable HeapRef thisFreePtr[TRACK_SIZES];
+    mutable HeapRef thisFreePtr;
     ConstTable thisConstTable;
     mutable Stack<Cell> thisStack;
-    mutable Stack<Cell*> thisStackGC;
     bool thisUseTrail;
     Stack<Cell> thisTrail;
     mutable HashMap<Cell, ConstRef> thisNameMap;

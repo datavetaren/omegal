@@ -85,7 +85,7 @@ void testWAMBookFigure21()
     std::string asList = heap.toRawString(origin, heap.topHeapRef());
     std::cout << "AS LIST: " << asList << "\n";
 
-    assert(asList == "[STR:2, CON:h, REF:3, REF:4, STR:6, CON:f, REF:4, STR:9, CON:p, REF:3, STR:2, STR:6]");
+    assert(asList == "[STR:2, CON:h/2, REF:3, REF:4, STR:6, CON:f/1, REF:4, STR:9, CON:p/3, REF:3, STR:2, STR:6]");
 
     std::cout << "AS TERM : ";
     heap.print(std::cout, heap.getCell(origin + 7));
@@ -431,9 +431,141 @@ CellRef generalizeTerm(Heap &heap, CellRef term, int p, bool lotsOfForward)
     }
 }
 
-void testUnifyBig(double gcFactor, bool withForwards, int verbosity = 1)
+namespace PROJECT {
+
+class HeapTest {
+public:
+    HeapTest(Heap &heap) : thisHeap(heap) { }
+
+    BitMap & getForwardPointers() { return thisHeap.thisForwardPointers; }
+
+private:
+    Heap &thisHeap;
+};
+
+}
+
+void testGC()
 {
-    std::cout << "-------- testUnifyBig(" << gcFactor << "," << withForwards << ") --------------------\n";
+    // An explicit GC test
+
+    Heap heap;
+    heap.setStrict(true); // Will clear top of heap after GC
+    
+    // Create 11 cells of garbage
+    // We put this into a scope so that there are no live references
+    // to it (otherwise it will not be garbage.)
+    {
+	const size_t TRASH_ARITY = 10;
+	CellRef trash = heap.newStr(heap.getConst("foo", TRASH_ARITY));
+	for (size_t i = 0; i < TRASH_ARITY; i++) {
+	    heap.setArg(trash, i, heap.newConst("nothing"));
+	}
+    }
+
+    CellRef middle; // This is the only reference that will survive
+    {
+    // Create a small term above1(Q)
+    // This will have location [12]: CON:above1/1
+    //                         [13]: REF:13
+    CellRef above1 = heap.newTerm(heap.getConst("above1", 1));
+
+    // Create another small term above2(R)
+    // This will have location [14]: CON:above/1
+    //                         [15]: REF:15
+    CellRef above2 = heap.newTerm(heap.getConst("above2", 1));
+
+    // Create a term with 3 args
+    // This will have location [14]: CON:middle/3
+    //                         [15]: REF:15
+    //                         [16]: REF:16
+    //                         [17]: REF:17
+    middle = heap.newTerm(heap.getConst("middle", 3));
+
+    // Create a small term below(W)
+    // This will have location [18]: CON:below/1
+    //                         [19]: REF:19
+    CellRef below = heap.newTerm(heap.getConst("below", 1));
+
+    // Now we'll create a forward pointer from above1(Q) to point at middle/3
+    heap.unify(heap.getArg(above1,0), middle);
+
+    // Then we'll create a back pointer to above1(Q) from middle(A,B,C)
+    // So that B = above1(Q).
+    heap.unify(heap.getArg(middle,1), above1);
+
+    // Create another back pointer to above2(R) from middle(A,B,C)
+    // So that C = above2(Q). (above2 will not have a forward pointer
+    // to middle)
+    heap.unify(heap.getArg(middle,2), above2);
+
+    // Then finally a back pointer from below(W) to middle/3
+    heap.unify(heap.getArg(below,0), middle);
+    }
+
+    heap.printRaw(std::cout);
+
+    // Now check that we have precisely one forward pointer.
+    HeapTest heapTest(heap);
+    BitMap &fwd = heapTest.getForwardPointers();
+    size_t n = fwd.getSize();
+    std::cout << "Number of bits for forward pointers: " << n << "\n";
+    int cnt = 0;
+    CellRef cell;
+    for (size_t index = 0; index < n;) {
+	index = fwd.findBit(index, n);
+	if (index < n) {
+	    std::cout << "Found at : [" << index << "]: ";
+	    cell = heap.getCell(HeapRef(index));
+	    heap.printCell(std::cout, cell);
+	    std::cout << "\n";
+	    cnt++;
+	}
+	index++;
+    }
+    std::cout << "Expecting 1 forward pointer: got=" << cnt << "\n";
+    assert(cnt == 1);
+    std::cout << "Forward pointer should be REF:13 and got: ";
+    heap.printCell(std::cout, cell);
+    std::cout << "\n";
+    assert(cell->getTag() == Cell::REF);
+    assert(heap.toHeapRef(cell) == HeapRef(13));
+    std::cout << ">>> Do a full GC --------------------------------\n";
+
+    // Now let's invoke a full GC
+    heap.gc(1.0, 3);
+
+    std::cout << "Another scan for forward pointers:\n";
+    cnt = 0;
+    for (size_t index = 0; index < n;) {
+	index = fwd.findBit(index, n);
+	if (index < n) {
+	    std::cout << "Found at : [" << index << "]: ";
+	    if (index == 0) {
+		std::cout << "NULL";
+	    } else {
+		cell = heap.getCell(HeapRef(index));
+		heap.printCell(std::cout, cell);
+	    }
+	    std::cout << "\n";
+	    cnt++;
+	}
+	index++;
+    }    
+    std::cout << "<<< Done\n";
+
+    // Print heap again
+    heap.printRaw(std::cout);
+
+    // Size of heap should now be 9 cells
+    std::cout << "Size of heap: " << heap.getHeapSize() << " (expecting 9)\n";
+    assert(heap.getHeapSize() == 9);
+}
+
+void testUnifyTerms(double gcFactor, size_t depth, bool moreForwards,
+		    int verbosity = 1)
+{
+    std::cout << "-------- testUnifyTerms(gcFactor=" << gcFactor << ",depth=" << depth << ",moreForwards=" << moreForwards << ") --------------------\n";
 
     Heap heap;
     heap.setStrict(true);
@@ -447,13 +579,11 @@ void testUnifyBig(double gcFactor, bool withForwards, int verbosity = 1)
     std::stringstream ss6;
 
     {
-    const size_t DEPTH = 5;
-
     myRand(0); // Reset random generator
 
     // First create big term (same as before)
-    std::cout << "Create big term...\n";
-    CellRef term = newTerm(heap, DEPTH);
+    std::cout << "Create term with depth=" << depth << "...\n";
+    CellRef term = newTerm(heap, depth);
 
     std::stringstream ss;
     heap.print(ss, term, param);
@@ -468,7 +598,7 @@ void testUnifyBig(double gcFactor, bool withForwards, int verbosity = 1)
 	std::cout << "GTERM: " << ss2.str() << "\n";
     }
 
-    hTerm = generalizeTerm(heap, term, 10, withForwards);
+    hTerm = generalizeTerm(heap, term, 10, moreForwards);
     std::stringstream ss3;
     heap.print(ss3, hTerm, param);
     if (verbosity > 1) {
@@ -514,12 +644,16 @@ void testUnifyBig(double gcFactor, bool withForwards, int verbosity = 1)
 
     std::cout << "First gc\n";
     heap.gc(gcFactor, verbosity);
+
+    heap.print(std::cout, hTerm, param);
+    std::cout << "\n";
+
     std::cout << "Second gc\n";
     heap.gc(gcFactor, verbosity);
 
     std::stringstream ss7;
     heap.print(ss7, hTerm, param);
-    if (verbosity > 1) {
+    if (verbosity > 1 || (ss7.str() != ss6.str())) {
 	std::cout << "Term after GC\n" << ss7.str() << "\n";
     }
 
@@ -540,13 +674,15 @@ void testUnifyBig(double gcFactor, bool withForwards, int verbosity = 1)
 //
 // Should be possible
 
-static void printMap(CellRef map)
+static void printIt(CellRef obj, const char *label)
 {
-    const Heap &heap = map.getHeap();
+    const Heap &heap = obj.getHeap();
     PrintParam param;
     param.setMaxWidth(78-param.getStartColumn());
-    std::cout << "MAP: ";
-    heap.print(std::cout, map, param);
+    if (label != NULL) {
+	std::cout << label;
+    }
+    heap.print(std::cout, obj, param);
     std::cout << "\n";
 }
 
@@ -624,13 +760,43 @@ static void normalizeString(std::string &s)
 
 void testMap1()
 {
-    printf("-------- testMap1() ------------------------\n");
+    std::cout << "-------- testMap1() ------------------------\n";
+
+    Heap heap;
+
+    CellRef map = heap.newMap(5);
+
+    std::cout << "Put foo:bar\n";
+    map = heap.putMap(map, heap.newConst("foo"), heap.newConst("bar"));
+
+    CellRef r = heap.getMap(map, heap.newConst("foo"));
+    std::cout << "Find foo: " << heap.toString(r) << "\n";
+    assert(heap.toString(r) == "bar");
+    r = heap.getMap(map, heap.newConst("bar"));
+    std::cout << "Find bar: " << heap.toString(r) << "\n";
+    assert(heap.toString(r) == "null");
+
+    std::cout << "Put xyz:abc\n";
+    map = heap.putMap(map, heap.newConst("xyz"), heap.newConst("abc"));
+
+    r = heap.getMap(map, heap.newConst("foo"));
+    std::cout << "Find foo: " << heap.toString(r) << "\n";
+    assert(heap.toString(r) == "bar");    
+
+    r = heap.getMap(map, heap.newConst("xyz"));
+    std::cout << "Find xyz: " << heap.toString(r) << "\n";
+    assert(heap.toString(r) == "abc");
+}
+
+void testMap2()
+{
+    std::cout << "-------- testMap2() ------------------------\n";
 
     std::map<std::string, std::string> refMap;
 
     Heap heap;
 
-    CellRef map = heap.newMap(5);
+    CellRef map = heap.newMap(2);
     for (size_t i = 0; i < 100; i++) {
 	char key[32];
 	char val[32];
@@ -662,7 +828,8 @@ void testMap1()
     }
 
     std::cout << ">> DONE ---\n";
-    printMap(map);
+    printIt(map, "MAP: ");
+    printIt(heap.mapAsList(map), "LST: ");
 }
 
 int main(int argc, char *argv[] )
@@ -679,15 +846,18 @@ int main(int argc, char *argv[] )
     testUnify1();
     testUnify2();
 
-    testUnifyBig(0.4, true, 1);
-    testUnifyBig(0.8, true, 1);
-    testUnifyBig(1.0, true, 1);
-    testUnifyBig(0.4, false, 1);
-    testUnifyBig(0.8, false, 1);
-    testUnifyBig(1.0, false, 1);
+    testGC();
 
+    testUnifyTerms(0.4, 5, true, 1);
+    testUnifyTerms(0.8, 5, true, 1);
+    testUnifyTerms(1.0, 5, true, 1);
+    testUnifyTerms(0.4, 5, false, 1);
+    testUnifyTerms(0.8, 5, false, 1);
+    testUnifyTerms(1.0, 5, false, 1);
+    
     testAssocList();
     testMap1();
+    testMap2();
 
     return 0;
 }
