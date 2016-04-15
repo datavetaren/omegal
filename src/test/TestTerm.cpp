@@ -792,6 +792,8 @@ void testMap2()
 {
     std::cout << "-------- testMap2() ------------------------\n";
 
+    myRand(0); // Reset random generator
+
     std::map<std::string, std::string> refMap;
 
     Heap heap;
@@ -832,6 +834,71 @@ void testMap2()
     printIt(heap.mapAsList(map), "LST: ");
 }
 
+void testMapGC()
+{
+    std::cout << "-------- testMapGC() ------------------------\n";
+
+    myRand(0); // Reset random generator
+
+    std::map<std::string, std::string> refMap;
+
+    Heap heap;
+
+    CellRef map = heap.newMap(2);
+    for (size_t i = 0; i < 100; i++) {
+	char key[32];
+	char val[32];
+	sprintf(key, "key%lu", myRand(100));
+	sprintf(val, "val%lu", myRand(100));
+	ConstRef keyConst = heap.getConst(key, 0);
+	ConstRef valConst = heap.getConst(val, 0);
+
+	CellRef keyCell = heap.newConst(keyConst);
+	CellRef valCell = heap.newConst(valConst);
+
+	std::cout << "Adding " << key << ":" << val << "\n";
+
+	map = heap.putMap(map, keyCell, valCell);
+	refMap[key] = val;
+    }
+
+    CellRef mapList = heap.qsortList(heap.mapAsList(map));
+    std::string refMapStr = toString(refMap);
+    std::string heapMapStr = heap.toString(mapList);
+    normalizeString(refMapStr);
+    normalizeString(heapMapStr);
+    
+    if (refMapStr != heapMapStr) {
+	std::cout << "REF: " << refMapStr << "\n";
+	std::cout << "MAP: " << heapMapStr << "\n";
+    } else {
+	std::cout << "MAP: " << heapMapStr << "\n";
+    }
+    
+    assert(refMapStr == heapMapStr);
+
+    heap.printStatus(std::cout);
+
+    std::cout << "Full GC\n";
+    // Full garbage collection
+    heap.gc(1.0, 1);
+    std::cout << "Full GC done\n";
+
+    mapList = heap.qsortList(heap.mapAsList(map));
+    refMapStr = toString(refMap);
+    heapMapStr = heap.toString(mapList);
+    normalizeString(refMapStr);
+    normalizeString(heapMapStr);
+    
+    if (refMapStr != heapMapStr) {
+	std::cout << "REF: " << refMapStr << "\n";
+	std::cout << "MAP: " << heapMapStr << "\n";
+    } else {
+	std::cout << "MAP: " << heapMapStr << "\n";
+    }
+    heap.printStatus(std::cout);
+}
+
 int main(int argc, char *argv[] )
 {
     std::cout << "TestTerm::main() **************************************\n";
@@ -858,6 +925,7 @@ int main(int argc, char *argv[] )
     testAssocList();
     testMap1();
     testMap2();
+    testMapGC();
 
     return 0;
 }

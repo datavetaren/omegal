@@ -1,0 +1,4 @@
+?- [lalr].
+
+?- lalr('grammar.pl').
+...

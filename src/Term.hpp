@@ -605,6 +605,8 @@ public:
     }
 
     CellRef assocListReplace(CellRef list, CellRef key, CellRef value);
+    CellRef assocListReplace(CellRef list, CellRef key, CellRef value,
+			     bool &extended);
     CellRef assocListFind(CellRef list, CellRef key);
 
     inline CellRef newStr(HeapRef strRef)
@@ -685,7 +687,7 @@ private:
     CellRef mapCreateNewTree(size_t startDepth, size_t endDepth,
 			     uint32_t hash, CellRef key, CellRef value);
     size_t mapGetSpine(CellRef map, CellRef key, uint32_t hash);
-    CellRef wrapSpine(CellRef tree, uint32_t hash);
+    CellRef wrapSpine(CellRef tree, uint32_t hash, int deltaChange);
     CellRef setArg32(CellRef mapCell, size_t index, CellRef arg);
     CellRef getArg32(CellRef mapCell, size_t index);
 
@@ -776,6 +778,7 @@ public:
 	case Cell::INT32:
 	case Cell::REF:
 	case Cell::FWD:
+	case Cell::MAP:
 	    return true;
 	case Cell::CON:
 	case Cell::EXT:

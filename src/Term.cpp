@@ -52,16 +52,26 @@ public:
 
     inline uint32_t getMask() const
     { return static_cast<uint32_t>(thisCellPtr[1].getRawValue()); }
-
     inline void setMask(uint32_t mask)
     { thisCellPtr[1].setRawValue(mask); }
+    inline size_t getArity() const
+    { return bitCount(getMask()); }
 
     inline Cell getArg(size_t index) const
     { return thisCellPtr[2+index]; }
+    inline Cell * getArgRef(size_t index)
+    { return &thisCellPtr[2+index]; }
     inline void setArg(size_t index, Cell cell)
     { thisCellPtr[2+index] = cell; }
 
 private:
+    inline size_t bitCount(uint32_t w) const
+    {
+	w = w - ((w >> 1) & 0x55555555);
+	w = (w & 0x33333333) + ((w >> 2) & 0x33333333);
+	return (((w + (w >> 4)) & 0x0F0F0F0F) * 0x01010101) >> 24;
+    }
+
     Cell *thisCellPtr;
 };
 
@@ -1777,6 +1787,15 @@ bool Heap::isInRange(Cell cell, HeapRef atStart, HeapRef atEnd)
 	    }
 	    return false;
 	}
+    case Cell::MAP:
+	{
+	    MapNode mapNode(toAbsolute(href));
+	    size_t arity = 2 + mapNode.getArity();
+	    if (atStart <= href + arity && href < atEnd) {
+		return true;
+	    }
+	    return false;
+	}
     case Cell::REF:
     case Cell::INT32:
 	return atStart <= href && href < atEnd;
@@ -1853,7 +1872,20 @@ void Heap::findLive(HeapRef fromHeapRef)
 	    }
 	case Cell::MAP:
 	    {
-	        assert("Cell::MAP To be implemented"==NULL);
+		if (isInRange(cell, atStart, atEnd)) {
+		    HeapRef mapNodeRef = toHeapRef(cell);
+		    MapNode mapNode(toAbsolute(mapNodeRef));
+		    size_t arity = mapNode.getArity();
+		    bool isVisited = thisLive.hasBit(mapNodeRef.getIndex());
+		    thisLive.setBits(mapNodeRef.getIndex(),
+				     mapNodeRef.getIndex()+arity+2);
+		    if (!isVisited) {
+			for (size_t i = 0; i < arity; i++) {
+			    Cell arg = mapNode.getArg(i);
+			    thisStack.push(arg);
+			}
+		    }
+		}
 		break;
 	    }
 	case Cell::REF:
@@ -2071,7 +2103,7 @@ void Heap::compactLive(Heap::Mode mode, HeapRef fromHeapRef, int verbosity)
 				Cell argCell = followFwd(deref(argCell0));
 				if (argCell0 != argCell) {
 				    setCell(arg, argCell);
-				    checkForwardPointer(arg, argCell);
+				    // checkForwardPointer(arg, argCell);
 				}
 			    }
 			}
@@ -2084,11 +2116,65 @@ void Heap::compactLive(Heap::Mode mode, HeapRef fromHeapRef, int verbosity)
 	    break;
 	case Cell::MAP:
 	    {
-		// Here we should treat the MAP as STR
-		// Just process one node and push its arguments.
-		assert("Cell::MAP to be implemented"==NULL);
-		break;
+		HeapRef dst = toHeapRef(cell);
+		MapNode mapNode(toAbsolute(dst));
+		size_t arity = mapNode.getArity();
+
+		if (!visited) {
+		    thisStack.push(cell);
+		    for (size_t i = 0; i < arity; i++) {
+			HeapRef arg = toRelative(mapNode.getArgRef(arity-i-1));
+			if (atStart <= arg && arg < atEnd) {
+			    Cell toPush = followFwd(deref(getCell0(arg)));
+			    if (hasHeapRef(toPush)) {
+				HeapRef toPushHref = toHeapRef(toPush);
+				if (!thisVisited.hasBit(
+					toPushHref.getIndex())) {
+				    thisStack.push(toPush);
+				}
+			    }
+			}
+		    }
+		} else {
+		    switch (mode) {
+		    case COMPACT_MOVE: {
+			// We're back at the parent after having visited
+			// all the children. Let's move the map block
+			// itself.
+			size_t numCells = 2 + arity;
+			HeapRef newLoc = findFreeSlot(numCells, dst);
+			if (!newLoc.isNull()) {
+			    compactMove(dst, numCells, newLoc, verbosity);
+			} else {
+			    if (verbosity > 1) {
+				std::cout << "MOVEFAIL: " << dst.getIndex() << " numCells=" << numCells << "\n";
+			    }
+			    newLoc = dst;
+			}
+			if (newLoc + numCells > thisCompactedEnd) {
+			    thisCompactedEnd = newLoc + numCells;
+			}
+		    }
+		    break;
+		    case COMPACT_UPDATE_FWD: {
+			for (size_t i = 0; i < arity; i++) {
+			    HeapRef arg = toRelative(mapNode.getArgRef(arity-i-1));
+			    if (atStart <= arg && arg < atEnd) {
+				Cell argCell0 = getCell0(arg);
+				Cell argCell = followFwd(deref(argCell0));
+				if (argCell0 != argCell) {
+				    setCell(arg, argCell);
+				    // checkForwardPointer(arg, argCell);
+				}
+			    }
+			}
+			break;
+		    }
+		    break;
+		    }
+		}
 	    }
+	    break;
 	case Cell::REF:
 	    {
 		switch (mode) {
@@ -2119,7 +2205,7 @@ void Heap::compactLive(Heap::Mode mode, HeapRef fromHeapRef, int verbosity)
 		    Cell dstCell = followFwd(deref(dstCell0));
 		    if (dstCell0 != dstCell) {
 			setCell(dst, dstCell);
-			checkForwardPointer(dst, dstCell);
+			// checkForwardPointer(dst, dstCell);
 		    }
 		    break;
 		}
@@ -2558,7 +2644,7 @@ size_t Heap::mapGetSpine(CellRef map, CellRef key, uint32_t hash)
     return depth+1;
 }
 
-CellRef Heap::wrapSpine(CellRef tree, uint32_t hash)
+CellRef Heap::wrapSpine(CellRef tree, uint32_t hash, int deltaChange)
 {
     bool cont = true;
     while (cont) {
@@ -2603,7 +2689,7 @@ CellRef Heap::putMap(CellRef map, CellRef key, CellRef value)
 	    return map;
 	}
 	CellRef newTree = mapCreateNewTree(spineDepth, depth, hash, key, value);
-	return wrapSpine(newTree, hash);
+	return wrapSpine(newTree, hash, 1);
     }
 
     // We've found the entire spine (= a collision)
@@ -2614,16 +2700,20 @@ CellRef Heap::putMap(CellRef map, CellRef key, CellRef value)
 	// Shall we create a new list?
 	CellRef key1 = getArg(leaf, 0);
 	if (equal(key,key1)) {
+	    int de = 0;
 	    CellRef newLeaf;
 	    if (!value->isNull()) {
+		de = 0;
 		newLeaf = newPair(key,value);
+	    } else {
+		de = -1;
 	    }
-	    return wrapSpine(newLeaf, hash);
+	    return wrapSpine(newLeaf, hash, de);
 	} else {
 	    // Create a list with two elements
 	    CellRef newLeaf = newList(newPair(key,value),
 				      newList(leaf, newList()));
-	    return wrapSpine(newLeaf, hash);
+	    return wrapSpine(newLeaf, hash, 1);
 	}
     }
 
@@ -2633,7 +2723,7 @@ CellRef Heap::putMap(CellRef map, CellRef key, CellRef value)
 	thisStack.trim(stackMark);
 	return map;
     }
-    return wrapSpine(newLeaf, hash);
+    return wrapSpine(newLeaf, hash, 0);
 }
 
 CellRef Heap::getMap(CellRef map, CellRef key)
