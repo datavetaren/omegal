@@ -1,15 +1,49 @@
 main :-
     read_clauses('grammar.pl', Clauses),
-    get_clause(Clauses, start(X,T,T1) :- Body),
-    pretty_program(Clauses).
+    get_clauses(start(X,T,T1), Clauses, Match),
+    pretty_program(Match),
+    interpret([start(X,T,T1)], Clauses, Result),
+    pretty(Result), nl.
 
-is_non_epsilon_clause(Clauses, Head :- Body) :-
+
+interpret(Goals,Clauses,Result) :-
+    interpret0(Goals,Clauses,[],Result).
+
+interpret0([],_Clauses, _Stack, true).
+interpret0([Goal|Goals], Clauses, Stack, Result) :-
+    write('Goal:'), nl, pretty(Goal), nl,
+%    write('Stack:'), nl, write(Stack), nl,
+    % If Goal already on stack, then skip it.
+    (\+ member(Goal, Stack) ->
+     interpret_goal(Goal, Clauses, Stack, Result0),
+     interpret0(Goals, Clauses, Stack, Result1),
+     Result = (Result0, Result1)
+   ; interpret0(Goals, Clauses, Stack, Result)).
+
+interpret_goal(Goal, _Clauses, _Stack, Result) :-
+    is_unification(Goal), !, Result = Goal.
+interpret_goal(Goal, Clauses, Stack, Result) :-
+    get_clauses(Goal, Clauses, Match),
+    interpret_match(Match, Goal, Clauses, [Goal|Stack], Result).
+
+interpret_match([], _Goal, _Clauses, _Stack, false).
+interpret_match([M|Match], Goal, Clauses, Stack, (Result ; Result1)) :-
+    interpret_match_one(M, Goal, Clauses, Stack, Result),
+    interpret_match(Match, Goal, Clauses, Stack, Result1).
+
+interpret_match_one(Head :- Body, Goal, Clauses, Stack, Result) :-
+    Head =.. [H|ArgsHead],
+    Goal =.. [H|ArgsGoal],
+    append(Result1, [Result0], Result2),
+    interpret_match_unify(ArgsHead, ArgsGoal, Result1),
     commas_to_list(Body, Goals),
-    is_non_epsilon_goals(Goals, Clauses).
+    interpret0(Goals, Clauses, Stack, Result0),
+    list_to_commas(Result2, Result).
 
-is_non_epsilon_clause([Goal|Goals], _) :- is_unification(Goal),
-is_epsilon_clause([Goal|Goals], Clauses) :-
-    (is_epsilon_clause(
+interpret_match_unify([], [], []).
+interpret_match_unify([A|As], [B|Bs], [A=B | Result]) :-
+    A = B,
+    interpret_match_unify(As, Bs, Result).
 
 % ------------------------------------------------
 % is_unification(+Term)
@@ -18,8 +52,20 @@ is_epsilon_clause([Goal|Goals], Clauses) :-
 is_unification(_ = _).
 
 % ------------------------------------------------
-%
-%
+% get_clauses(+Goal, +Clauses, -Match)
+%  Get clauses from Clauses that match Goal.
+%  The result is in Match.
+% ------------------------------------------------
+get_clauses(Goal, Clauses, Match) :-
+    get_clauses0(Clauses, Goal, Match).
+
+get_clauses0([], _Goal, []).
+get_clauses0([(Head :- Body) | Clauses], Goal, [MatchGoal|Match]) :-
+    \+ Head \= Goal, !,
+    copy_term(Head:-Body, MatchGoal),
+    get_clauses0(Clauses, Goal, Match).
+get_clauses0([_Clause|Clauses], Goal, Match) :-
+    get_clauses0(Clauses, Goal, Match).
 
 % ------------------------------------------------
 % commas_to_list(+Commas, -List)
