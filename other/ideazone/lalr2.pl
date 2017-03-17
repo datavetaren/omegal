@@ -2,16 +2,26 @@ main :-
     read_clauses('grammar.pl', Clauses),
     get_clauses(start(X,T,T1), Clauses, Match),
     pretty_program(Match),
-    interpret([start(X,T,T1)], Clauses, Result),
+    interpret([start(X,T,T1)], Clauses, Result0),
+    simplify(Result0, Result1),
+    pull(Result1, Result),
     pretty(Result), nl.
 
+
+% -----------------------------------------------------
+%  interpret(+Goals,+Clauses,-Result)
+%   Interpret Goals using the defined Clauses. Result is
+%   a statement with conjunctions and disjunctions which
+%   holds the result of the execution, where we never
+%   visit the same goal twice (to prevent recursion.)
+% -----------------------------------------------------
 
 interpret(Goals,Clauses,Result) :-
     interpret0(Goals,Clauses,[],Result).
 
 interpret0([],_Clauses, _Stack, true).
 interpret0([Goal|Goals], Clauses, Stack, Result) :-
-    write('Goal:'), nl, pretty(Goal), nl,
+%    write('Goal:'), nl, pretty(Goal), nl,
 %    write('Stack:'), nl, write(Stack), nl,
     % If Goal already on stack, then skip it.
     (\+ member(Goal, Stack) ->
@@ -41,9 +51,48 @@ interpret_match_one(Head :- Body, Goal, Clauses, Stack, Result) :-
     list_to_commas(Result2, Result).
 
 interpret_match_unify([], [], []).
-interpret_match_unify([A|As], [B|Bs], [A=B | Result]) :-
+interpret_match_unify([A|As], [B|Bs], Result) :-
     A = B,
     interpret_match_unify(As, Bs, Result).
+
+% ------------------------------------------------
+%  simplify(+Prog,-Result)
+%   Remove true from conjunctions
+%   Remove false from disjunctions
+% ------------------------------------------------
+simplify(A,B) :- \+ var(A), simplify_nonvar(A,B), !.
+simplify(A,B) :-
+    !,
+    (var(A) -> B = A
+   ; A =.. [Functor|AArgs],
+     simplify_list(AArgs, BArgs),
+     B =.. [Functor|BArgs]
+     ).
+
+simplify_nonvar((A,true),B) :- simplify(A,B).
+simplify_nonvar((true,A),B) :- simplify(A,B).
+simplify_nonvar((A;false),B) :- simplify(A,B).
+simplify_nonvar((false;A),B) :- simplify(A,B).
+
+simplify_list([],[]).
+simplify_list([A|As],[B|Bs]) :-
+    simplify(A,B),
+    simplify_list(As,Bs).
+
+% -----------------------------------------------------
+% pull(A,B)
+%  Given (A ; B), C
+%  Rewrite it to (A, C ; B, C)
+%  This enables further optimizations
+% -----------------------------------------------------
+
+pull(((A ; B), C), ((A, C1) ; (B, C1))) :-
+    !, pull(C, C1).
+pull((A,B), (A1,B1)) :-
+    !,
+    pull(A, A1),
+    pull(B, B1).
+pull(A,A).
 
 % ------------------------------------------------
 % is_unification(+Term)
