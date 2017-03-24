@@ -2,58 +2,101 @@ main :-
     read_clauses('grammar.pl', Clauses),
     get_clauses(start(X,T,T1), Clauses, Match),
     pretty_program(Match),
-    interpret([start(X,T,T1)], Clauses, Result0),
-    simplify(Result0, Result1),
-    pull(Result1, Result),
-    pretty(Result), nl.
+    Source = [start(X,T,T1)],
+    first(Source,Clauses,[T],Bindings),
+    pretty_program(Bindings), nl, fail.
 
+
+% ------------------------------------------------------
+%  Construct LALR(1) state machine
+%
+%  State
+%  state(Number,Seen,Follow,Lookahead)
+%
+
+
+% ------------------------------------------------------
+%  first(+Goals,+Clauses,+Vars,Bindings)
+%
+%  Execute all possible variants Goals using Clauses as
+%  the program and Vars as set of variables we are
+%  interested in.
+% -----------------------------------------------------
+first(Goals,Clauses,Vars,Bindings) :-
+    term_variables(Goals, AllVars),
+    subtract_vars(AllVars, Vars, ExtVars),
+    append(ExtVars, [interpret_nr(Goals,Clauses)], ExtList),
+    list_to_ext(ExtList, Query),
+    setof(Vars, Query, Bindings1),
+    term_variables(Bindings1, Bindings1Vars),
+    bind_all_vars(Bindings1Vars, '$var'),
+    sort(Bindings1, Bindings2).
+%    unbind_term(Bindings2, '$var', Bindings).
+
+bind_all_vars([V|Vs],T) :- V = T, bind_all_vars(Vs,T).
+bind_all_vars([],_).
+
+unbind_term(Term,ToUnbind,NewTerm) :-
+    !,
+    (Term == ToUnbind -> true
+     ;
+     Term =.. [Functor|Args],
+     unbind_term_list(Args,ToUnbind,NewArgs),
+     NewTerm =.. [Functor|NewArgs]).
+
+unbind_term_list([],_,[]).
+unbind_term_list([T|Ts],ToUnbind,[T1|Ts1]) :-
+     unbind_term(T,ToUnbind,T1),
+     unbind_term_list(Ts,ToUnbind,Ts1).
+
+% ------------------------------------------------------
+%  subtract_vars(+Vars,+ToRemove,-Remaining)
+%   Remove vars in Vars from ToRemove. The remaining set
+%   of vars is in Remaning.
+% ------------------------------------------------------
+subtract_vars([],_,[]).
+subtract_vars([X|Xs],Ys,Zs) :-
+    (member_term(Ys, X) -> subtract_vars(Xs,Ys,Zs)
+    ;Zs = [X|Zs1], subtract_vars(Xs,Ys,Zs1)).
+
+% ------------------------------------------------------
+%  member_term(Xs,X)
+%  Like member(X,Xs), but using == when comparing terms.
+%  This enables us to compare vars without unification.
+% ------------------------------------------------------
+member_term([Y|_], X) :-
+    X == Y, !.
+member_term([_|Ys], X) :-
+    !, member_term(Ys,X).
+
+% ------------------------------------------------------
 
 % -----------------------------------------------------
-%  interpret(+Goals,+Clauses,-Result)
-%   Interpret Goals using the defined Clauses. Result is
-%   a statement with conjunctions and disjunctions which
-%   holds the result of the execution, where we never
-%   visit the same goal twice (to prevent recursion.)
+%  interpret_nr(+Goals,+Clauses)
+%   Interpret Goals using the defined Clauses _non_recursive_;
+%   instead skips goals whenever a recursion would have occurred.
 % -----------------------------------------------------
 
-interpret(Goals,Clauses,Result) :-
-    interpret0(Goals,Clauses,[],Result).
+interpret_nr(Goals,Clauses) :-
+    interpret_goals(Goals,Clauses,[]).
 
-interpret0([],_Clauses, _Stack, true).
-interpret0([Goal|Goals], Clauses, Stack, Result) :-
+interpret_goals([],_Clauses, _Stack).
+interpret_goals([Goal|Goals], Clauses, Stack) :-
 %    write('Goal:'), nl, pretty(Goal), nl,
 %    write('Stack:'), nl, write(Stack), nl,
     % If Goal already on stack, then skip it.
     (\+ member(Goal, Stack) ->
-     interpret_goal(Goal, Clauses, Stack, Result0),
-     interpret0(Goals, Clauses, Stack, Result1),
-     Result = (Result0, Result1)
-   ; interpret0(Goals, Clauses, Stack, Result)).
+     interpret_goal(Goal, Clauses, Stack),
+     interpret_goals(Goals, Clauses, Stack)
+   ; interpret_goals(Goals, Clauses, Stack)).
 
-interpret_goal(Goal, _Clauses, _Stack, Result) :-
-    is_unification(Goal), !, Result = Goal.
-interpret_goal(Goal, Clauses, Stack, Result) :-
+interpret_goal(X = Y, _Clauses, _Stack) :-
+    X = Y, !.
+interpret_goal(Goal, Clauses, Stack) :-
     get_clauses(Goal, Clauses, Match),
-    interpret_match(Match, Goal, Clauses, [Goal|Stack], Result).
-
-interpret_match([], _Goal, _Clauses, _Stack, false).
-interpret_match([M|Match], Goal, Clauses, Stack, (Result ; Result1)) :-
-    interpret_match_one(M, Goal, Clauses, Stack, Result),
-    interpret_match(Match, Goal, Clauses, Stack, Result1).
-
-interpret_match_one(Head :- Body, Goal, Clauses, Stack, Result) :-
-    Head =.. [H|ArgsHead],
-    Goal =.. [H|ArgsGoal],
-    append(Result1, [Result0], Result2),
-    interpret_match_unify(ArgsHead, ArgsGoal, Result1),
+    member(Goal :- Body, Match),
     commas_to_list(Body, Goals),
-    interpret0(Goals, Clauses, Stack, Result0),
-    list_to_commas(Result2, Result).
-
-interpret_match_unify([], [], []).
-interpret_match_unify([A|As], [B|Bs], Result) :-
-    A = B,
-    interpret_match_unify(As, Bs, Result).
+    interpret_goals(Goals, Clauses, [Goal|Stack]).
 
 % ------------------------------------------------
 %  simplify(+Prog,-Result)
@@ -130,8 +173,8 @@ commas_to_list(X,[X]).
 %  convert into a comma terms: (a, (b, (c, d))),
 % ------------------------------------------------
 list_to_commas(L,C) :- foldl(L,',',C).
-
 list_to_semi(L,C) :- foldl(L,';',C).
+list_to_ext(L,C) :- foldl(L,'^',C).
 
 foldl([A|B],F,G) :- foldl(B,F,C), G =.. [F,A,C].
 foldl([B], _, B).
