@@ -15,6 +15,34 @@ main :-
 %
 
 
+
+init_env(Env,Clauses) :-
+    InitItem = item('$start', [],[start(X,T,[])],[]),
+    Env = env([state(0,InitItem)],[T],Clauses).
+
+process_state(State, Env) :-
+    Env = env(States, GroundVars, Clauses),
+    State = state(Number,Seen,Follow,Lookahead),
+    Follow = [First|Rest],
+    first(Rest,Clauses,GroundVars,Lookahead1),
+    append(Lookahead1,Lookahead,NewLookahead),
+    
+
+get_kernel(Item, Env, Kernel) :-
+    Env = env(States, GroundVars, Clauses),
+    Item = item(Head,Seen,Follow,Lookahead),
+    Follow = [First|Rest],
+    first(Rest,Clauses,GroundVars,NewLookahead0),
+    append(Lookahead, NewLookahead0, NewLookahead1),
+    sort(NewLookahead1, NewLookahead),
+    get_clauses(Clauses, First, Match),
+    itemize_clauses(Match, Lookahead, Items),
+
+itemize_clauses([Head :- Body | Clauses], Lookahead, [Item|Items]) :-
+    commas_to_list(Body, Goals),
+    Item = item(Head,[], Goals, Lookahead)
+    
+
 % ------------------------------------------------------
 %  first(+Goals,+Clauses,+Vars,Bindings)
 %
