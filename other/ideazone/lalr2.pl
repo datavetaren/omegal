@@ -1,10 +1,9 @@
 main :-
-    read_clauses('grammar.pl', Clauses),
-    get_clauses(start(X,T,T1), Clauses, Match),
-    pretty_program(Match),
-    Source = [start(X,T,T1)],
-    first(Source,Clauses,[T],Bindings),
-    pretty_program(Bindings), nl, fail.
+    init_env(Env, 'grammar.pl'),
+    Env = env([InitItem|_], _, _),
+    get_kernel(InitItem, Env, Kernel),
+    pretty_program(Kernel),
+    nl.
 
 
 % ------------------------------------------------------
@@ -16,31 +15,31 @@ main :-
 
 
 
-init_env(Env,Clauses) :-
-    InitItem = item('$start', [],[start(X,T,[])],[]),
-    Env = env([state(0,InitItem)],[T],Clauses).
+init_env(Env, GrammarFile) :-
+    read_clauses(GrammarFile, Clauses),
+    InitItem = item('$start', [],[start(_,T,[])],[]),
+    Env = env([InitItem],[T],Clauses).
 
-process_state(State, Env) :-
-    Env = env(States, GroundVars, Clauses),
-    State = state(Number,Seen,Follow,Lookahead),
-    Follow = [First|Rest],
-    first(Rest,Clauses,GroundVars,Lookahead1),
-    append(Lookahead1,Lookahead,NewLookahead),
-    
+process_state(Item, Env) :-
+    get_kernel(Item, Env, _),
+    nl.
 
 get_kernel(Item, Env, Kernel) :-
-    Env = env(States, GroundVars, Clauses),
-    Item = item(Head,Seen,Follow,Lookahead),
+    Env = env(_, GroundVars, Clauses),
+    Item = item(_,_,Follow,Lookahead),
     Follow = [First|Rest],
     first(Rest,Clauses,GroundVars,NewLookahead0),
     append(Lookahead, NewLookahead0, NewLookahead1),
     sort(NewLookahead1, NewLookahead),
-    get_clauses(Clauses, First, Match),
-    itemize_clauses(Match, Lookahead, Items),
+    get_clauses(First, Clauses, Match),
+    itemize_clauses(Match, NewLookahead, Items),
+    Kernel = Items.
 
+itemize_clauses([], _, []).
 itemize_clauses([Head :- Body | Clauses], Lookahead, [Item|Items]) :-
     commas_to_list(Body, Goals),
-    Item = item(Head,[], Goals, Lookahead)
+    Item = item(Head,[], Goals, Lookahead),
+    itemize_clauses(Clauses, Lookahead, Items).
     
 
 % ------------------------------------------------------
@@ -58,7 +57,7 @@ first(Goals,Clauses,Vars,Bindings) :-
     setof(Vars, Query, Bindings1),
     term_variables(Bindings1, Bindings1Vars),
     bind_all_vars(Bindings1Vars, '$var'),
-    sort(Bindings1, Bindings2).
+    sort(Bindings1, Bindings).
 %    unbind_term(Bindings2, '$var', Bindings).
 
 bind_all_vars([V|Vs],T) :- V = T, bind_all_vars(Vs,T).
