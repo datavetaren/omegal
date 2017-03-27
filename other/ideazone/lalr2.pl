@@ -1,7 +1,7 @@
 main :-
     init_env(Env, 'grammar.pl'),
     Env = env([InitItem|_], _, _),
-    get_kernel(InitItem, Env, Kernel),
+    item_closure(InitItem, Env, Kernel),
     pretty_program(Kernel),
     nl.
 
@@ -20,11 +20,10 @@ init_env(Env, GrammarFile) :-
     InitItem = item('$start', [],[start(_,T,[])],[]),
     Env = env([InitItem],[T],Clauses).
 
-process_state(Item, Env) :-
-    get_kernel(Item, Env, _),
-    nl.
+item_closure(Item, Env, Closure) :-
+    item_closure(Item, Env, [], Closure).
 
-get_kernel(Item, Env, Kernel) :-
+item_closure(Item, Env, ItemsIn, ItemsOut) :-
     Env = env(_, GroundVars, Clauses),
     Item = item(_,_,Follow,Lookahead),
     Follow = [First|Rest],
@@ -33,7 +32,16 @@ get_kernel(Item, Env, Kernel) :-
     sort(NewLookahead1, NewLookahead),
     get_clauses(First, Clauses, Match),
     itemize_clauses(Match, NewLookahead, Items),
-    Kernel = Items.
+    item_closure_add(Items, Env, ItemsIn, ItemsOut).
+
+item_closure_add([], _, Items, Items).
+item_closure_add([Item|Items], Env, ItemsIn, ItemsOut) :-
+    (member(Item, ItemsIn) ->
+     item_closure_add(Items, Env, ItemsIn, ItemsOut)
+   ; append(ItemsIn, [Item], ItemsIn0),
+     item_closure(Item, Env, ItemsIn0, ItemsOut0),
+     item_closure_add(Items, Env, ItemsOut0, ItemsOut)
+    ).
 
 itemize_clauses([], _, []).
 itemize_clauses([Head :- Body | Clauses], Lookahead, [Item|Items]) :-
