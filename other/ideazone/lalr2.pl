@@ -1,5 +1,5 @@
 main :-
-    init_env(Env, 'grammar.pl'),
+    init_env(Env, 'expr.pl'),
     Env = env([InitItem|_], _, _),
     item_closure(InitItem, Env, Kernel),
     pretty_program(Kernel),
@@ -17,7 +17,7 @@ main :-
 
 init_env(Env, GrammarFile) :-
     read_clauses(GrammarFile, Clauses),
-    InitItem = item('$start', [],[start(_,T,[])],[]),
+    InitItem = item('$start', [],[start(_,T,_)],[]),
     Env = env([InitItem],[T],Clauses).
 
 item_closure(Item, Env, Closure) :-
@@ -26,21 +26,31 @@ item_closure(Item, Env, Closure) :-
 item_closure(Item, Env, ItemsIn, ItemsOut) :-
     Env = env(_, GroundVars, Clauses),
     Item = item(_,_,Follow,Lookahead),
-    Follow = [First|Rest],
-    first(Rest,Clauses,GroundVars,NewLookahead0),
-    append(Lookahead, NewLookahead0, NewLookahead1),
-    sort(NewLookahead1, NewLookahead),
-    get_clauses(First, Clauses, Match),
-    itemize_clauses(Match, NewLookahead, Items),
-    item_closure_add(Items, Env, ItemsIn, ItemsOut).
+    (Follow = [First|_] ->
+     first(Follow,Clauses,GroundVars,NewLookahead0),
+     append(Lookahead, NewLookahead0, NewLookahead1),
+     sort(NewLookahead1, NewLookahead),
+     (get_clauses(First, Clauses, Match) ->
+      itemize_clauses(Match, NewLookahead, Items),
+      item_closure_add(Items, Env, ItemsIn, NewItems)
+    ; NewItems = []
+     ),
+     append(ItemsIn, NewItems, ItemsIn0),
+     item_closure_list(NewItems, Env, ItemsIn0, ItemsOut)
+   ; ItemsOut = ItemsIn
+    ).
 
-item_closure_add([], _, Items, Items).
-item_closure_add([Item|Items], Env, ItemsIn, ItemsOut) :-
-    (member(Item, ItemsIn) ->
-     item_closure_add(Items, Env, ItemsIn, ItemsOut)
-   ; append(ItemsIn, [Item], ItemsIn0),
-     item_closure(Item, Env, ItemsIn0, ItemsOut0),
-     item_closure_add(Items, Env, ItemsOut0, ItemsOut)
+item_closure_list([], _, Items, Items).
+item_closure_list([Item|Items], Env, ItemsIn, ItemsOut) :-
+    item_closure(Item, Env, ItemsIn, ItemsOut0),
+    item_closure_list(Items, Env, ItemsOut0, ItemsOut).
+
+item_closure_add([], _, _, []).
+item_closure_add([Item|Items], Env, ItemsIn, NewItems) :-
+    (member_streq(ItemsIn, Item) ->
+     item_closure_add(Items, Env, ItemsIn, NewItems)
+   ; NewItems = [Item | NewItems0],
+     item_closure_add(Items, Env, ItemsIn, NewItems0)
     ).
 
 itemize_clauses([], _, []).
@@ -48,6 +58,55 @@ itemize_clauses([Head :- Body | Clauses], Lookahead, [Item|Items]) :-
     commas_to_list(Body, Goals),
     Item = item(Head,[], Goals, Lookahead),
     itemize_clauses(Clauses, Lookahead, Items).
+
+
+% ------------------------------------------------------
+%  member_streq(List, Term)
+%
+%  Look for Term in List using structurally_eq.
+%
+
+member_streq([T|List], Term) :-
+    (structurally_eq(T, Term) -> true
+    ;member_streq(List, Term)).
+
+% ------------------------------------------------------
+%  structurally_eq(+Term1,+Term2)
+%
+%  Take copies of Term1 and Term2. Bind each variable
+%  to a unique ground term, identified by a counter.
+%  If then these term are equal, then they are
+%  structurally equal.
+%
+structurally_eq(Term1, Term2) :-
+    term_structure(Term1, TermStructure1),
+    term_structure(Term2, TermStructure2),
+    TermStructure1 == TermStructure2.
+
+% ------------------------------------------------------
+%  term_structure(+Term, -GroundTerm)
+%
+%  Replace each var in Term with a unique atom.
+%  The result is in GroundTerm.
+%
+
+term_structure(Term, GroundTerm) :-
+    copy_term(Term, TermCopy),
+    term_variables(TermCopy, TermVars),
+    bind_all_vars_with_count(TermVars,0),
+    GroundTerm = TermCopy.
+
+bind_all_vars_with_count([],_).
+bind_all_vars_with_count([V|Vs],Count) :-
+    (var(V) ->
+     number_codes(Count, NumCodes),
+     atom_codes('$var', PrefixCodes),
+     append(PrefixCodes,NumCodes,AtomCodes),
+     atom_codes(Atom, AtomCodes),
+     V = Atom,
+     Count1 is Count+1,
+     bind_all_vars_with_count(Vs,Count1)
+   ; bind_all_vars_with_count(Vs,Count)).
     
 
 % ------------------------------------------------------
@@ -60,13 +119,37 @@ itemize_clauses([Head :- Body | Clauses], Lookahead, [Item|Items]) :-
 first(Goals,Clauses,Vars,Bindings) :-
     term_variables(Goals, AllVars),
     subtract_vars(AllVars, Vars, ExtVars),
-    append(ExtVars, [interpret_nr(Goals,Clauses)], ExtList),
+    append(ExtVars, [interpret_nr(Goals,Clauses,Constraints)], ExtList),
     list_to_ext(ExtList, Query),
-    setof(Vars, Query, Bindings1),
-    term_variables(Bindings1, Bindings1Vars),
-    bind_all_vars(Bindings1Vars, '$var'),
-    sort(Bindings1, Bindings).
-%    unbind_term(Bindings2, '$var', Bindings).
+    (Vars = [Var] -> VarTerm = Var ; VarTerm = Vars),
+    setof(VarTerm-Constraints, Query, Bindings1),
+    filter_result(Bindings1, FilteredBindings),
+    term_variables(FilteredBindings, Bindings1Vars),
+    bind_all_vars_with_count(Bindings1Vars, 0),
+    sort(FilteredBindings, Bindings).
+
+filter_result([], []).
+filter_result([V-C|List], Result) :-
+    term_variables(V, V1),
+    prune_constraints(C, V1, C0),
+    (C0 = [] ->
+     (var(V) ->
+       Result = Result0
+     ; Result = [V|Result0]
+     )
+   ; Result = [V-C0|Result0]
+    ),
+    filter_result(List, Result0).
+
+prune_constraints([], _, []).
+prune_constraints([C|Cs], Vars, Constraints) :-
+    term_variables(C, CVars),
+    subtract_vars(CVars, Vars, Vars0),
+    (CVars == Vars0 ->
+     prune_constraints(Cs, Vars, Constraints)
+   ; Constraints = [C|Constraints0],
+     prune_constraints(Cs, Vars, Constraints0)
+    ).
 
 bind_all_vars([V|Vs],T) :- V = T, bind_all_vars(Vs,T).
 bind_all_vars([],_).
@@ -112,26 +195,29 @@ member_term([_|Ys], X) :-
 %   instead skips goals whenever a recursion would have occurred.
 % -----------------------------------------------------
 
-interpret_nr(Goals,Clauses) :-
-    interpret_goals(Goals,Clauses,[]).
+interpret_nr(Goals,Clauses,Constraints) :-
+    interpret_goals(Goals,Clauses,[],[],Constraints).
 
-interpret_goals([],_Clauses, _Stack).
-interpret_goals([Goal|Goals], Clauses, Stack) :-
+interpret_goals([],_Clauses, _Stack, Constraints, Constraints).
+interpret_goals([Goal|Goals], Clauses, Stack, Cin, Cout) :-
 %    write('Goal:'), nl, pretty(Goal), nl,
 %    write('Stack:'), nl, write(Stack), nl,
     % If Goal already on stack, then skip it.
     (\+ member(Goal, Stack) ->
-     interpret_goal(Goal, Clauses, Stack),
-     interpret_goals(Goals, Clauses, Stack)
-   ; interpret_goals(Goals, Clauses, Stack)).
+     interpret_goal(Goal, Clauses, Stack, Cin, Cout0),
+     interpret_goals(Goals, Clauses, Stack, Cout0, Cout)
+   ; interpret_goals(Goals, Clauses, Stack, Cin, Cout)).
 
-interpret_goal(X = Y, _Clauses, _Stack) :-
+interpret_goal(X = Y, _Clauses, _Stack, Constraints, Constraints) :-
     X = Y, !.
-interpret_goal(Goal, Clauses, Stack) :-
-    get_clauses(Goal, Clauses, Match),
-    member(Goal :- Body, Match),
-    commas_to_list(Body, Goals),
-    interpret_goals(Goals, Clauses, [Goal|Stack]).
+interpret_goal(Goal, Clauses, Stack, Cin, Cout) :-
+    (get_clauses(Goal, Clauses, Match) ->
+     member(Goal :- Body, Match),
+     commas_to_list(Body, Goals),
+     interpret_goals(Goals, Clauses, [Goal|Stack], Cin, Cout)
+     % Goal could not be found. Assume it is external.
+   ; append(Cin, [Goal], Cout)
+    ).
 
 % ------------------------------------------------
 %  simplify(+Prog,-Result)
@@ -184,7 +270,8 @@ is_unification(_ = _).
 %  The result is in Match.
 % ------------------------------------------------
 get_clauses(Goal, Clauses, Match) :-
-    get_clauses0(Clauses, Goal, Match).
+    get_clauses0(Clauses, Goal, Match),
+    Match = [_|_].
 
 get_clauses0([], _Goal, []).
 get_clauses0([(Head :- Body) | Clauses], Goal, [MatchGoal|Match]) :-
