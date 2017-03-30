@@ -1,9 +1,12 @@
 main :-
+    (retract(mycount(_)) -> true ; true),
+    assert(mycount(1)),
     init_env(Env, 'expr.pl'),
-    Env = env([InitItem|_], _, _),
-    item_closure(InitItem, Env, Kernel),
-    pretty_program(Kernel),
+    Env = env([InitItem|_], _),
+    item_closure(InitItem, Env, Closure),
+    pretty_program(Closure),
     nl.
+
 
 
 % ------------------------------------------------------
@@ -17,21 +20,25 @@ main :-
 
 init_env(Env, GrammarFile) :-
     read_clauses(GrammarFile, Clauses),
-    InitItem = item('$start', [],[start(_,T,_)],[]),
-    Env = env([InitItem],[T],Clauses).
+    InitItem = item('$start', [],[start(_X,T,_T1)],[T],[]),
+    Env = env([InitItem],Clauses).
 
 item_closure(Item, Env, Closure) :-
     item_closure(Item, Env, [], Closure).
 
 item_closure(Item, Env, ItemsIn, ItemsOut) :-
-    Env = env(_, GroundVars, Clauses),
-    Item = item(_,_,Follow,Lookahead),
+%    write('Closure: '), pretty(Item), nl,
+    mycount(Cnt),
+    Cnt < 25,
+    retract(mycount(Cnt)),
+    Cnt1 is Cnt + 1,
+    assert(mycount(Cnt1)),
+    Env = env(_, Clauses),
+    Item = item(_,_,Follow,GroundVars,_),
     (Follow = [First|_] ->
-     first(Follow,Clauses,GroundVars,NewLookahead0),
-     append(Lookahead, NewLookahead0, NewLookahead1),
-     sort(NewLookahead1, NewLookahead),
+     first(Item,Clauses,Lookahead),
      (get_clauses(First, Clauses, Match) ->
-      itemize_clauses(Match, NewLookahead, Items),
+      itemize_clauses(Match, First, GroundVars, Lookahead, Items),
       item_closure_add(Items, Env, ItemsIn, NewItems)
     ; NewItems = []
      ),
@@ -53,11 +60,21 @@ item_closure_add([Item|Items], Env, ItemsIn, NewItems) :-
      item_closure_add(Items, Env, ItemsIn, NewItems0)
     ).
 
-itemize_clauses([], _, []).
-itemize_clauses([Head :- Body | Clauses], Lookahead, [Item|Items]) :-
+itemize_clauses([], _, _, _, []).
+itemize_clauses([Head :- Body | Clauses], First, GroundVars, Lookahead, [Item|Items]) :-
     commas_to_list(Body, Goals),
-    Item = item(Head,[], Goals, Lookahead),
-    itemize_clauses(Clauses, Lookahead, Items).
+    copy_term(First-GroundVars-Lookahead, CopyFirst-CopyGroundVars-CopyLookahead),
+    CopyFirst = Head,
+    term_variables(Head, HeadVars),
+    find_ground_vars(HeadVars, CopyGroundVars, NewGroundVars),
+    Item = item(Head, [], Goals, NewGroundVars, CopyLookahead),
+    itemize_clauses(Clauses, First, GroundVars, Lookahead, Items).
+
+find_ground_vars([],_,[]).
+find_ground_vars([V|Vs],GroundVars,NVs) :-
+    (member_term(GroundVars, V) -> NVs = [V|NVs0] ; NVs = NVs0),
+    find_ground_vars(Vs,GroundVars,NVs0).
+    
 
 
 % ------------------------------------------------------
@@ -93,51 +110,124 @@ structurally_eq(Term1, Term2) :-
 term_structure(Term, GroundTerm) :-
     copy_term(Term, TermCopy),
     term_variables(TermCopy, TermVars),
-    bind_all_vars_with_count(TermVars,0),
+    bind_all_vars_with_count(TermVars,0,'$var',_),
     GroundTerm = TermCopy.
 
-bind_all_vars_with_count([],_).
-bind_all_vars_with_count([V|Vs],Count) :-
-    (var(V) ->
-     number_codes(Count, NumCodes),
-     atom_codes('$var', PrefixCodes),
+
+repeated_vars(Term,Repeated) :-
+    repeated_vars1(Term,[],_,[],Repeated).
+
+repeated_vars1(Term,FoundIn,FoundOut,RepeatedIn,RepeatedOut) :-
+    (var(Term) ->
+     (member_term(FoundIn,Term) ->
+        RepeatedOut = [Term|RepeatedIn],
+        FoundOut = FoundIn
+      ; RepeatedOut = RepeatedIn,
+        FoundOut = [Term|FoundIn]
+     )
+     ; atom(Term) -> FoundOut = FoundIn, RepeatedOut = RepeatedIn
+     ; Term =.. [_|Args],
+       repeated_vars1_list(Args,FoundIn,FoundOut,RepeatedIn,RepeatedOut)
+     ).
+
+repeated_vars1_list([],Found,Found,Repeated,Repeated).
+repeated_vars1_list([T|Ts],FoundIn,FoundOut,RepeatedIn,RepeatedOut) :-
+     repeated_vars1(T,FoundIn,FoundOut0,RepeatedIn,RepeatedOut0),
+     repeated_vars1_list(Ts,FoundOut0,FoundOut,RepeatedOut0,RepeatedOut).
+
+bind_all_vars_with_count(Term,CountIn,Tag,CountOut) :-
+    (var(Term) ->
+     number_codes(CountIn, NumCodes),
+     atom_codes(Tag, PrefixCodes),
      append(PrefixCodes,NumCodes,AtomCodes),
      atom_codes(Atom, AtomCodes),
-     V = Atom,
-     Count1 is Count+1,
-     bind_all_vars_with_count(Vs,Count1)
-   ; bind_all_vars_with_count(Vs,Count)).
+     Term = Atom,
+     CountOut is CountIn+1
+    ;atom(Term) -> CountOut = CountIn
+    ;Term =.. [_|Args],
+     bind_all_vars_with_count_list(Args,CountIn,Tag,CountOut)
+     ).
+
+bind_all_vars_with_count_list([],Count,_,Count).
+bind_all_vars_with_count_list([Term|Terms],CountIn,Tag,CountOut) :-
+    bind_all_vars_with_count(Term,CountIn,Tag,CountOut0),
+    bind_all_vars_with_count_list(Terms,CountOut0,Tag,CountOut).
     
 
 % ------------------------------------------------------
-%  first(+Goals,+Clauses,+Vars,Bindings)
+%  first(+Item,+Clauses,-Bindings)
 %
 %  Execute all possible variants Goals using Clauses as
-%  the program and Vars as set of variables we are
-%  interested in.
+%  the program.
 % -----------------------------------------------------
-first(Goals,Clauses,Vars,Bindings) :-
-    term_variables(Goals, AllVars),
-    subtract_vars(AllVars, Vars, ExtVars),
-    append(ExtVars, [interpret_nr(Goals,Clauses,Constraints)], ExtList),
+first(Item,Clauses,Lookahead) :-
+    Item = item(Head,Seen,Follow,GroundVars,ItemLookahead),
+    term_variables(Head-Seen-Follow, AllVars),
+    subtract_vars(AllVars, GroundVars, ExtVars),
+    append(ExtVars, [interpret_nr(Follow,Clauses,Constraints)], ExtList),
     list_to_ext(ExtList, Query),
-    (Vars = [Var] -> VarTerm = Var ; VarTerm = Vars),
-    setof(VarTerm-Constraints, Query, Bindings1),
-    filter_result(Bindings1, FilteredBindings),
-    term_variables(FilteredBindings, Bindings1Vars),
-    bind_all_vars_with_count(Bindings1Vars, 0),
-    sort(FilteredBindings, Bindings).
+    (GroundVars = [Var] -> VarTerm = Var ; VarTerm = GroundVars),
+    setof(VarTerm-Constraints, Query, Bindings0),
+    filter_result(Bindings0, Bindings1),
+    add_binding_vars(Bindings1, VarTerm, Bindings2),
+    append(Bindings2, ItemLookahead, Bindings3),
+    prune_lookahead(Bindings3, AllVars, Lookahead).
+
+prune_lookahead(LookaheadIn, ProjectVars, LookaheadOut) :-
+    copy_term(LookaheadIn-ProjectVars, CopyLookaheadIn-CopyProjectVars),
+    bind_all_vars_with_count(CopyProjectVars,0,'$var',_),
+    prune_lookahead1(LookaheadIn, CopyLookaheadIn, [], LookaheadOut).
+
+prune_lookahead1([], [], _, []).
+prune_lookahead1([Binding|Bindings], [CopyBinding|CopyBindings], Found,
+		 LookaheadOut) :-
+    bind_all_vars_with_count(CopyBinding,0,'$bind',_),
+    (member(CopyBinding, Found) ->
+     LookaheadOut = LookaheadOut0, Found0 = Found
+    ; LookaheadOut = [Binding|LookaheadOut0], Found0 = [CopyBinding|Found]
+    ),
+    prune_lookahead1(Bindings, CopyBindings, Found0, LookaheadOut0).
+
+bind_vars(Term, To) :-
+    (var(Term) -> Term = To
+    ;atom(Term) -> true
+    ;Term =.. [_|Args],
+     bind_vars_list(Args,To)
+     ).
+
+bind_vars_list([],_).
+bind_vars_list([T|Ts],To) :-
+    bind_vars(T, To),
+    bind_vars_list(Ts,To).
+
+unbind_vars(Term, Bound, Unbound, NewTerm) :-
+    (atom(Term), nth0(Index, Bound, Term) ->
+     nth0(Index, Unbound, NewTerm)
+   ; Term =.. [Functor|Args],
+     unbind_vars_list(Args,Bound,Unbound,NewArgs),
+     NewTerm =.. [Functor|NewArgs]).
+
+unbind_vars_list([], _, _, []).
+unbind_vars_list([T|Ts], Bound, Unbound, [NT|NTs]) :-
+    unbind_vars(T,Bound,Unbound,NT),
+    unbind_vars_list(Ts, Bound, Unbound, NTs).
+    
+
+add_binding_vars([], _, []).
+add_binding_vars([B|Bs], VarTerm, [(VarTerm=B)|Bs1]) :-
+    add_binding_vars(Bs, VarTerm, Bs1).
 
 filter_result([], []).
-filter_result([V-C|List], Result) :-
-    term_variables(V, V1),
+filter_result([Term-C|List], Result) :-
+    prune_term(Term, NewTerm),
+    term_variables(NewTerm, V1),
     prune_constraints(C, V1, C0),
     (C0 = [] ->
-     (var(V) ->
+     (var(NewTerm) ->
        Result = Result0
-     ; Result = [V|Result0]
+     ; Result = [NewTerm|Result0]
      )
-   ; Result = [V-C0|Result0]
+   ; Result = [NewTerm-C0|Result0]
     ),
     filter_result(List, Result0).
 
@@ -151,14 +241,33 @@ prune_constraints([C|Cs], Vars, Constraints) :-
      prune_constraints(Cs, Vars, Constraints0)
     ).
 
+%prune_term_list([],[]).
+%prune_term_list([T|Ts], [NewT|NewTs]) :-
+%    prune_term(T,NewT),
+%    prune_term_list(Ts,NewTs).
+
+prune_term(Term, NewTerm) :-
+    (var(Term) -> NewTerm = Term
+     ; Term = [A|_] -> NewTerm = [A|_]
+     ; Term =.. [Functor|Args],
+       NewTerm =.. [Functor|NewArgs],
+       prune_args(Args, NewArgs)
+     ).
+
+prune_args([], []).
+prune_args([Arg|Args], [NewArg|NewArgs]) :-
+    functor(Arg, Name, Arity),
+    (Arity > 0 -> functor(NewArg, Name, Arity) ; NewArg = Arg),
+    prune_args(Args, NewArgs).
+
 bind_all_vars([V|Vs],T) :- V = T, bind_all_vars(Vs,T).
 bind_all_vars([],_).
 
 unbind_term(Term,ToUnbind,NewTerm) :-
     !,
     (Term == ToUnbind -> true
-     ;
-     Term =.. [Functor|Args],
+     ;var(Term) -> NewTerm = Term
+     ;Term =.. [Functor|Args],
      unbind_term_list(Args,ToUnbind,NewArgs),
      NewTerm =.. [Functor|NewArgs]).
 
