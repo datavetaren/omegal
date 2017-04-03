@@ -2,9 +2,11 @@ main :-
     (retract(mycount(_)) -> true ; true),
     assert(mycount(1)),
     init_env(Env, 'expr.pl'),
-    Env = env([InitItem|_], _),
+    Env = env([InitItem|_], _Clauses),
     item_closure(InitItem, Env, Closure),
     pretty_program(Closure),
+%    first(InitItem,Clauses,Lookahead),
+%    pretty_program(Lookahead),
     nl.
 
 
@@ -20,7 +22,12 @@ main :-
 
 init_env(Env, GrammarFile) :-
     read_clauses(GrammarFile, Clauses),
-    InitItem = item('$start', [],[start(_X,T,_T1)],[T],[]),
+%    InitItem = item('$start', [],[start(X,T,T1)],[T,T1],[]),
+
+     InitItem = item(factor(F,X,Y), [X =['('|Y1]], [expr(E,Y1,Y2), Y2 = [')'|Y], F = E], [X,Y,Y1,Y2], []),
+%    InitItem = item(expr(E,X,Y), [],[expr(E1,X,Y1),Y1=['+'|Y2], expr(E2,Y2,Y), E=E1+E2],[X],[]),
+%    InitItem = item(expr(T,X,Y), [],[term(T,X,Y)],[X],[]),
+
     Env = env([InitItem],Clauses).
 
 item_closure(Item, Env, Closure) :-
@@ -29,7 +36,7 @@ item_closure(Item, Env, Closure) :-
 item_closure(Item, Env, ItemsIn, ItemsOut) :-
 %    write('Closure: '), pretty(Item), nl,
     mycount(Cnt),
-    Cnt < 25,
+    (Cnt >= 50 -> xxx ; true),
     retract(mycount(Cnt)),
     Cnt1 is Cnt + 1,
     assert(mycount(Cnt1)),
@@ -37,15 +44,18 @@ item_closure(Item, Env, ItemsIn, ItemsOut) :-
     Item = item(_,_,Follow,GroundVars,_),
     (Follow = [First|_] ->
      first(Item,Clauses,Lookahead),
+%     write('Lookahead: '), pretty(Item-Lookahead), nl,
      (get_clauses(First, Clauses, Match) ->
       itemize_clauses(Match, First, GroundVars, Lookahead, Items),
       item_closure_add(Items, Env, ItemsIn, NewItems)
     ; NewItems = []
      ),
      append(ItemsIn, NewItems, ItemsIn0),
-     item_closure_list(NewItems, Env, ItemsIn0, ItemsOut)
-   ; ItemsOut = ItemsIn
-    ).
+     item_closure_list(NewItems, Env, ItemsIn0, ItemsOut0)
+   ; ItemsOut0 = ItemsIn
+    ),
+    item_closure_add([Item], Env, ItemsOut0, NewItems0),
+    append(NewItems0, ItemsOut0, ItemsOut).
 
 item_closure_list([], _, Items, Items).
 item_closure_list([Item|Items], Env, ItemsIn, ItemsOut) :-
@@ -66,16 +76,33 @@ itemize_clauses([Head :- Body | Clauses], First, GroundVars, Lookahead, [Item|It
     copy_term(First-GroundVars-Lookahead, CopyFirst-CopyGroundVars-CopyLookahead),
     CopyFirst = Head,
     term_variables(Head, HeadVars),
-    find_ground_vars(HeadVars, CopyGroundVars, NewGroundVars),
-    Item = item(Head, [], Goals, NewGroundVars, CopyLookahead),
+    find_ground_vars(HeadVars, CopyGroundVars, NewGroundVars0),
+    scan_ground_vars(Goals, NewGroundVars0, NewGroundVars1),
+    sort(NewGroundVars1, NewGroundVars),
+    prune_bindings(CopyLookahead, NewGroundVars, NewLookahead),
+    Item = item(Head, [], Goals, NewGroundVars, NewLookahead),
     itemize_clauses(Clauses, First, GroundVars, Lookahead, Items).
 
 find_ground_vars([],_,[]).
 find_ground_vars([V|Vs],GroundVars,NVs) :-
-    (member_term(GroundVars, V) -> NVs = [V|NVs0] ; NVs = NVs0),
+%    (member_term(GroundVars, V) -> NVs = [V|NVs0] ; NVs = NVs0),
+    (true -> NVs = [V|NVs0] ; NVs = NVs0),
     find_ground_vars(Vs,GroundVars,NVs0).
-    
 
+scan_ground_vars([], GroundVars, GroundVars).
+scan_ground_vars([X = Y | Goals], GroundVars, NewGroundVars) :-
+    !,
+    (var(X) -> % , member_term(GroundVars, X) ->
+     term_variables(Y, MoreGroundVars)
+    ; var(Y) -> % , member_term(GroundVars, Y) ->
+      term_variables(X, MoreGroundVars)
+    ; MoreGroundVars = []
+     ),
+    append(GroundVars, MoreGroundVars, GroundVars0),
+    scan_ground_vars(Goals, GroundVars0, NewGroundVars0),
+    append(MoreGroundVars, NewGroundVars0, NewGroundVars).
+scan_ground_vars([_ | Goals], GroundVars, NewGroundVars) :-
+    scan_ground_vars(Goals, GroundVars, NewGroundVars).
 
 % ------------------------------------------------------
 %  member_streq(List, Term)
@@ -166,12 +193,26 @@ first(Item,Clauses,Lookahead) :-
     subtract_vars(AllVars, GroundVars, ExtVars),
     append(ExtVars, [interpret_nr(Follow,Clauses,Constraints)], ExtList),
     list_to_ext(ExtList, Query),
-    (GroundVars = [Var] -> VarTerm = Var ; VarTerm = GroundVars),
-    setof(VarTerm-Constraints, Query, Bindings0),
-    filter_result(Bindings0, Bindings1),
-    add_binding_vars(Bindings1, VarTerm, Bindings2),
+    setof(GroundVars-Constraints, Query, Result),
+    add_binding_vars(Result, GroundVars, Bindings0),
+    flatten_bindings(Bindings0, Bindings1),
+%    write('first: '), pretty(Bindings1), nl,
+    filter_result(Bindings1, Bindings2),
     append(Bindings2, ItemLookahead, Bindings3),
-    prune_lookahead(Bindings3, AllVars, Lookahead).
+    prune_bindings(Bindings3, GroundVars, Bindings4),
+    prune_lookahead(Bindings4, GroundVars, Lookahead),
+    write('first: '), pretty(Item-lookahead(Lookahead)), nl.
+
+
+prune_bindings([], _, []).
+prune_bindings([(V=T)-C | Bs], GroundVars, NewBs) :-
+    (member_term(GroundVars, V) -> B = (V=T)-C, NewBs = [B|NewBs0]
+    ;NewBs = NewBs0),
+    prune_bindings(Bs, GroundVars, NewBs0).
+prune_bindings([(V=T) | Bs], GroundVars, NewBs) :-
+    (member_term(GroundVars, V) -> B = (V=T), NewBs = [B|NewBs0]
+    ;NewBs = NewBs0),
+    prune_bindings(Bs, GroundVars, NewBs0).
 
 prune_lookahead(LookaheadIn, ProjectVars, LookaheadOut) :-
     copy_term(LookaheadIn-ProjectVars, CopyLookaheadIn-CopyProjectVars),
@@ -214,20 +255,30 @@ unbind_vars_list([T|Ts], Bound, Unbound, [NT|NTs]) :-
     
 
 add_binding_vars([], _, []).
-add_binding_vars([B|Bs], VarTerm, [(VarTerm=B)|Bs1]) :-
-    add_binding_vars(Bs, VarTerm, Bs1).
+add_binding_vars([B-C|Bs], Vars, [Bounded|Bs1]) :-
+    add_binding_vars1(B, C, Vars, Bounded),
+    add_binding_vars(Bs, Vars, Bs1).
+
+add_binding_vars1([], _, [], []).
+add_binding_vars1([B|Bs], C, [V|Vs], [(V=B)-C | Bounded]) :-
+    add_binding_vars1(Bs,C,Vs,Bounded).
+
+flatten_bindings([], []).
+flatten_bindings([Bindings|Rest], Flattened) :-
+    append(Bindings, Flattened0, Flattened),
+    flatten_bindings(Rest, Flattened0).
 
 filter_result([], []).
-filter_result([Term-C|List], Result) :-
-    prune_term(Term, NewTerm),
+filter_result([(V=Term)-C|List], Result) :-
+    prune_term(Term, 1, NewTerm),
     term_variables(NewTerm, V1),
     prune_constraints(C, V1, C0),
     (C0 = [] ->
      (var(NewTerm) ->
        Result = Result0
-     ; Result = [NewTerm|Result0]
+     ; Result = [V=NewTerm|Result0]
      )
-   ; Result = [NewTerm-C0|Result0]
+   ; Result = [V=NewTerm-C0|Result0]
     ),
     filter_result(List, Result0).
 
@@ -241,24 +292,23 @@ prune_constraints([C|Cs], Vars, Constraints) :-
      prune_constraints(Cs, Vars, Constraints0)
     ).
 
-%prune_term_list([],[]).
-%prune_term_list([T|Ts], [NewT|NewTs]) :-
-%    prune_term(T,NewT),
-%    prune_term_list(Ts,NewTs).
-
-prune_term(Term, NewTerm) :-
+prune_term(Term, Depth, NewTerm) :-
     (var(Term) -> NewTerm = Term
-     ; Term = [A|_] -> NewTerm = [A|_]
-     ; Term =.. [Functor|Args],
-       NewTerm =.. [Functor|NewArgs],
-       prune_args(Args, NewArgs)
-     ).
+   ; atom(Term) -> NewTerm = Term
+   ; (Depth = 0 ->
+      NewTerm = _
+      ; % Non-zero depth
+      Depth1 is Depth - 1,
+      Term =.. [Functor|Args],
+      prune_args(Args, Depth1, NewArgs),
+      NewTerm =.. [Functor|NewArgs]
+     )
+    ).
 
-prune_args([], []).
-prune_args([Arg|Args], [NewArg|NewArgs]) :-
-    functor(Arg, Name, Arity),
-    (Arity > 0 -> functor(NewArg, Name, Arity) ; NewArg = Arg),
-    prune_args(Args, NewArgs).
+prune_args([], _, []).
+prune_args([Arg|Args], Depth, [NewArg|NewArgs]) :-
+    prune_term(Arg, Depth, NewArg),
+    prune_args(Args, Depth, NewArgs).
 
 bind_all_vars([V|Vs],T) :- V = T, bind_all_vars(Vs,T).
 bind_all_vars([],_).
