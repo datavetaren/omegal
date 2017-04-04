@@ -10,6 +10,16 @@ main :-
     nl.
 
 
+main2 :-
+    init_env(Env, 'expr.pl'),
+    Env = env(_, Clauses),
+%    Goals = [
+%	X = ground, Y1 = ground, expr(E1,X,Y1), Y1 = ['+'|Y2], expr(E2,Y2,Y), E = E1+E2
+%    ],
+    Goals = start(_,ground,ground),
+    groundness_analysis(Clauses, Goals),
+    write('hej '),
+    pretty(Goals), nl.
 
 % ------------------------------------------------------
 %  Construct LALR(1) state machine
@@ -29,6 +39,91 @@ init_env(Env, GrammarFile) :-
 %    InitItem = item(expr(T,X,Y), [],[term(T,X,Y)],[X],[]),
 
     Env = env([InitItem],Clauses).
+
+
+% -----------------------------------------------
+%   groundness
+%
+%  Given a Goal goal(X,Y,Z, ...) with a choice of the
+%  variables X,Y,Z,... bound to 'ground' we run
+%  an abstract interpretation using Clauses.
+%  Any variables (X,Y,Z,...) may be bound to 'ground'
+%  to indicate that they are always ground.
+%
+%  This needs to be rewritten using a fixpoint analysis
+%  over a lattice...
+%
+
+groundness_analysis(Clauses, Goal) :-
+    (Goal = [_ | _] ->
+     groundness_analysis_goals(Goal, Clauses, [])
+   ; groundness_analysis_goals([Goal], Clauses, [])
+    ).
+
+groundness_analysis_goals([], _, _).
+groundness_analysis_goals([Goal | Goals], Clauses, Visited) :-
+%    write('check goal '), pretty(Goal), nl,
+    (Goal = (A = B) ->
+     (A == ground
+      -> term_variables(B, Vars), bind_all_vars(Vars, ground)
+      ; B == ground
+      -> term_variables(A, Vars), bind_all_vars(Vars, ground)
+      ; true
+      ),
+     Visited1 = Visited
+     ;
+     functor(Goal, Functor, Arity),
+     (member(Functor/Arity, Visited) -> true
+      ; Visited1 = [Functor/Arity | Visited],
+        (get_clauses(Goal, Clauses, Match) ->
+	 groundness_analysis_match(Match, Goal, Clauses, Visited1),
+	 write(' match '), pretty_program(Match), nl,
+	 groundness_analysis_propagate(Match, Goal)
+	 ,write(' result goal '), pretty(Goal), nl
+	 ; true))),
+    groundness_analysis_goals(Goals, Clauses, Visited1).
+
+groundness_analysis_match([], _, _, _).
+groundness_analysis_match([Head :- Body | Match], Goal, Clauses, Visited) :-
+     Head = Goal,
+     commas_to_list(Body, Goals),
+     groundness_analysis_goals(Goals, Clauses, Visited),
+     groundness_analysis_match(Match, Goal, Clauses, Visited).
+
+groundness_analysis_propagate(Match, Goal) :-
+     groundness_match_heads(Match, Heads),
+     groundness_head_args(Heads, Args),
+     Goal =.. [_Functor | GoalArgs],
+%     write('check args'), nl, pretty(Args), nl, pretty(GoalArgs), nl,
+     groundness_analysis_check_args(0, Args, GoalArgs).
+
+groundness_analysis_all_ground([]).
+groundness_analysis_all_ground([V|Vs]) :-
+     V == ground, groundness_analysis_all_ground(Vs).
+
+groundness_analysis_check_args(N, ArgArgs, [G | GArgs]) :-
+    groundness_analysis_extract_arg(ArgArgs, N, Vs),
+    (groundness_analysis_all_ground(Vs) -> G = ground ; true),
+    N1 is N + 1,
+    ArgArgs = [Args | _],
+    length(Args, NLimit),
+    (N1 < NLimit ->
+     groundness_analysis_check_args(N1, ArgArgs, GArgs)
+     ; GArgs = []).
+
+groundness_analysis_extract_arg([], _, []).
+groundness_analysis_extract_arg([Args|ArgArgs], N, [E|Extracted]) :-
+    nth0(N, Args, E),
+    groundness_analysis_extract_arg(ArgArgs, N, Extracted).
+
+groundness_match_heads([], []).
+groundness_match_heads([Head :- _ | Match], [Head | Heads]) :-
+     groundness_match_heads(Match, Heads).
+
+groundness_head_args([], []).
+groundness_head_args([Head | Heads], [ArgList | Args]) :-
+     Head =.. [_Functor | ArgList],
+     groundness_head_args(Heads, Args).
 
 item_closure(Item, Env, Closure) :-
     item_closure(Item, Env, [], Closure).
@@ -439,6 +534,20 @@ get_clauses0([(Head :- Body) | Clauses], Goal, [MatchGoal|Match]) :-
     get_clauses0(Clauses, Goal, Match).
 get_clauses0([_Clause|Clauses], Goal, Match) :-
     get_clauses0(Clauses, Goal, Match).
+
+
+get_clauses_nocopy(Goal, Clauses, Match) :-
+    get_clauses_nocopy0(Clauses, Goal, Match),
+    Match = [_|_].
+
+get_clauses_nocopy0([], _Goal, []).
+get_clauses_nocopy0([(Head :- Body) | Clauses], Goal, [MatchGoal|Match]) :-
+    \+ Head \= Goal, !,
+    MatchGoal = (Head :- Body),
+    get_clauses_nocopy0(Clauses, Goal, Match).
+get_clauses_nocopy0([_Clause|Clauses], Goal, Match) :-
+    get_clauses_nocopy0(Clauses, Goal, Match).
+
 
 % ------------------------------------------------
 % commas_to_list(+Commas, -List)
