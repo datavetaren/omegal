@@ -1,6 +1,6 @@
 start(E,X,Y) :- expr(E,X,Y).
 
-expr(E,X,Y) :- expr(E1,X,Y1), Y1 = ['+'|Y2], expr(E2,Y2,Y), E = E1+E2.
+expr(E,X,Y) :- expr(E1,X,Y1), Y1 = ['+'|Y2], term(T,Y2,Y), E = E1+T.
 expr(T,X,Y) :- term(T,X,Y).
 
 term(T,X,Y) :- term(T1,X,Y1), Y1 = ['*'|Y2], factor(F,Y2,Y), T = T1*F.

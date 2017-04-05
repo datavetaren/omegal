@@ -2,11 +2,11 @@ main :-
     (retract(mycount(_)) -> true ; true),
     assert(mycount(1)),
     init_env(Env, 'expr.pl'),
-    Env = env([InitItem|_], _Clauses),
+    Env = env([InitItem|_], Clauses, Types, _Focus),
+    type_env(Clauses, Types),
+%    pretty(Types), nl,
     item_closure(InitItem, Env, Closure),
     pretty_program(Closure),
-%    first(InitItem,Clauses,Lookahead),
-%    pretty_program(Lookahead),
     nl.
 
 
@@ -32,102 +32,35 @@ main2 :-
 
 init_env(Env, GrammarFile) :-
     read_clauses(GrammarFile, Clauses),
-%    InitItem = item('$start', [],[start(X,T,T1)],[T,T1],[]),
+    InitItem = item('$start', [],[start(X,T,T1)],[T,T1],[]),
 
-     InitItem = item(factor(F,X,Y), [X =['('|Y1]], [expr(E,Y1,Y2), Y2 = [')'|Y], F = E], [X,Y,Y1,Y2], []),
+%     InitItem = item(factor(F,X,Y), [X =['('|Y1]], [expr(E,Y1,Y2), Y2 = [')'|Y], F = E], [X,Y,Y1,Y2], []),
 %    InitItem = item(expr(E,X,Y), [],[expr(E1,X,Y1),Y1=['+'|Y2], expr(E2,Y2,Y), E=E1+E2],[X],[]),
 %    InitItem = item(expr(T,X,Y), [],[term(T,X,Y)],[X],[]),
 
-    Env = env([InitItem],Clauses).
-
-
-% -----------------------------------------------
-%   groundness
-%
-%  Given a Goal goal(X,Y,Z, ...) with a choice of the
-%  variables X,Y,Z,... bound to 'ground' we run
-%  an abstract interpretation using Clauses.
-%  Any variables (X,Y,Z,...) may be bound to 'ground'
-%  to indicate that they are always ground.
-%
-%  This needs to be rewritten using a fixpoint analysis
-%  over a lattice...
-%
-
-groundness_analysis(Clauses, Goal) :-
-    (Goal = [_ | _] ->
-     groundness_analysis_goals(Goal, Clauses, [])
-   ; groundness_analysis_goals([Goal], Clauses, [])
-    ).
-
-groundness_analysis_goals([], _, _).
-groundness_analysis_goals([Goal | Goals], Clauses, Visited) :-
-%    write('check goal '), pretty(Goal), nl,
-    (Goal = (A = B) ->
-     (A == ground
-      -> term_variables(B, Vars), bind_all_vars(Vars, ground)
-      ; B == ground
-      -> term_variables(A, Vars), bind_all_vars(Vars, ground)
-      ; true
-      ),
-     Visited1 = Visited
-     ;
-     functor(Goal, Functor, Arity),
-     (member(Functor/Arity, Visited) -> true
-      ; Visited1 = [Functor/Arity | Visited],
-        (get_clauses(Goal, Clauses, Match) ->
-	 groundness_analysis_match(Match, Goal, Clauses, Visited1),
-	 write(' match '), pretty_program(Match), nl,
-	 groundness_analysis_propagate(Match, Goal)
-	 ,write(' result goal '), pretty(Goal), nl
-	 ; true))),
-    groundness_analysis_goals(Goals, Clauses, Visited1).
-
-groundness_analysis_match([], _, _, _).
-groundness_analysis_match([Head :- Body | Match], Goal, Clauses, Visited) :-
-     Head = Goal,
-     commas_to_list(Body, Goals),
-     groundness_analysis_goals(Goals, Clauses, Visited),
-     groundness_analysis_match(Match, Goal, Clauses, Visited).
-
-groundness_analysis_propagate(Match, Goal) :-
-     groundness_match_heads(Match, Heads),
-     groundness_head_args(Heads, Args),
-     Goal =.. [_Functor | GoalArgs],
-%     write('check args'), nl, pretty(Args), nl, pretty(GoalArgs), nl,
-     groundness_analysis_check_args(0, Args, GoalArgs).
-
-groundness_analysis_all_ground([]).
-groundness_analysis_all_ground([V|Vs]) :-
-     V == ground, groundness_analysis_all_ground(Vs).
-
-groundness_analysis_check_args(N, ArgArgs, [G | GArgs]) :-
-    groundness_analysis_extract_arg(ArgArgs, N, Vs),
-    (groundness_analysis_all_ground(Vs) -> G = ground ; true),
-    N1 is N + 1,
-    ArgArgs = [Args | _],
-    length(Args, NLimit),
-    (N1 < NLimit ->
-     groundness_analysis_check_args(N1, ArgArgs, GArgs)
-     ; GArgs = []).
-
-groundness_analysis_extract_arg([], _, []).
-groundness_analysis_extract_arg([Args|ArgArgs], N, [E|Extracted]) :-
-    nth0(N, Args, E),
-    groundness_analysis_extract_arg(ArgArgs, N, Extracted).
-
-groundness_match_heads([], []).
-groundness_match_heads([Head :- _ | Match], [Head | Heads]) :-
-     groundness_match_heads(Match, Heads).
-
-groundness_head_args([], []).
-groundness_head_args([Head | Heads], [ArgList | Args]) :-
-     Head =.. [_Functor | ArgList],
-     groundness_head_args(Heads, Args).
+    Env = env([InitItem],Clauses,_,ts).
 
 item_closure(Item, Env, Closure) :-
-    item_closure(Item, Env, [], Closure).
+    item_closure(Item, Env, [], Closure0),
+    compact_closure(Closure0, Closure).
 
+compact_closure([], []).
+compact_closure([Item|Items], Compact) :-
+    Item = item(Head,Seen,Follow,Vars,Lookahead),
+    Search = item(Head,Seen,Follow,Vars1,Lookahead1),
+    (select(Search, Items, Rest) ->
+     % We found another matching item, so merge lookaheads
+     MergedItem = item(Head,Seen,Follow,MergedVars,MergedLookaheads),
+     append(Vars,Vars1,MergedVars1),
+     sort(MergedVars1, MergedVars),
+     append(Lookahead,Lookahead1,MergedLookaheads1),
+     prune_lookahead(MergedLookaheads1, MergedVars, MergedLookaheads),
+     compact_closure([MergedItem|Rest], Compact)
+   ; Compact = [Item | Compact0],
+     compact_closure(Items, Compact0)
+     ).
+
+     
 item_closure(Item, Env, ItemsIn, ItemsOut) :-
 %    write('Closure: '), pretty(Item), nl,
     mycount(Cnt),
@@ -135,13 +68,13 @@ item_closure(Item, Env, ItemsIn, ItemsOut) :-
     retract(mycount(Cnt)),
     Cnt1 is Cnt + 1,
     assert(mycount(Cnt1)),
-    Env = env(_, Clauses),
-    Item = item(_,_,Follow,GroundVars,_),
+    Env = env(_, Clauses, _, Focus),
+    Item = item(_,_,Follow,_,_),
     (Follow = [First|_] ->
      first(Item,Clauses,Lookahead),
 %     write('Lookahead: '), pretty(Item-Lookahead), nl,
-     (get_clauses(First, Clauses, Match) ->
-      itemize_clauses(Match, First, GroundVars, Lookahead, Items),
+     (get_clauses_with_types(First, Env, Match, Types) ->
+      itemize_clauses(Match, Types, Focus, First, Lookahead, Items),
       item_closure_add(Items, Env, ItemsIn, NewItems)
     ; NewItems = []
      ),
@@ -165,18 +98,30 @@ item_closure_add([Item|Items], Env, ItemsIn, NewItems) :-
      item_closure_add(Items, Env, ItemsIn, NewItems0)
     ).
 
-itemize_clauses([], _, _, _, []).
-itemize_clauses([Head :- Body | Clauses], First, GroundVars, Lookahead, [Item|Items]) :-
+itemize_clauses([], _, _, _, _, []).
+itemize_clauses([Head :- Body | Clauses], Types, Focus, First, Lookahead, [Item|Items]) :-
     commas_to_list(Body, Goals),
-    copy_term(First-GroundVars-Lookahead, CopyFirst-CopyGroundVars-CopyLookahead),
+    copy_term(First-Lookahead, CopyFirst-CopyLookahead),
     CopyFirst = Head,
-    term_variables(Head, HeadVars),
-    find_ground_vars(HeadVars, CopyGroundVars, NewGroundVars0),
-    scan_ground_vars(Goals, NewGroundVars0, NewGroundVars1),
-    sort(NewGroundVars1, NewGroundVars),
-    prune_bindings(CopyLookahead, NewGroundVars, NewLookahead),
-    Item = item(Head, [], Goals, NewGroundVars, NewLookahead),
-    itemize_clauses(Clauses, First, GroundVars, Lookahead, Items).
+    term_variables(CopyFirst-Body, AllVars),
+    find_focus_vars(AllVars, Types, Focus, FocusVars),
+    sort(FocusVars, FocusVars1),
+%    write('prune '), pretty(CopyLookahead-AllVars1), nl,
+    prune_bindings(CopyLookahead, FocusVars1, NewLookahead),
+    Item = item(Head, [], Goals, FocusVars1, NewLookahead),
+    itemize_clauses(Clauses, Types, Focus, First, Lookahead, Items).
+
+var_has_type([V1=T1|Types],V,T) :-
+    (V == V1 -> T = T1
+     ; var_has_type(Types,V,T)).
+
+find_focus_vars([], _, _, []).
+find_focus_vars([V|Vs], Types, Focus, FocusVars) :-
+    (var_has_type(Types, V, Focus) ->
+     FocusVars = [V | FocusVars0],
+     find_focus_vars(Vs, Types, Focus, FocusVars0)
+   ; find_focus_vars(Vs, Types, Focus, FocusVars)
+     ).
 
 find_ground_vars([],_,[]).
 find_ground_vars([V|Vs],GroundVars,NVs) :-
@@ -283,20 +228,20 @@ bind_all_vars_with_count_list([Term|Terms],CountIn,Tag,CountOut) :-
 %  the program.
 % -----------------------------------------------------
 first(Item,Clauses,Lookahead) :-
-    Item = item(Head,Seen,Follow,GroundVars,ItemLookahead),
+    Item = item(Head,Seen,Follow,Vars,ItemLookahead),
     term_variables(Head-Seen-Follow, AllVars),
-    subtract_vars(AllVars, GroundVars, ExtVars),
+    subtract_vars(AllVars, Vars, ExtVars),
     append(ExtVars, [interpret_nr(Follow,Clauses,Constraints)], ExtList),
     list_to_ext(ExtList, Query),
-    setof(GroundVars-Constraints, Query, Result),
-    add_binding_vars(Result, GroundVars, Bindings0),
+    setof(Vars-Constraints, Query, Result),
+    add_binding_vars(Result, Vars, Bindings0),
     flatten_bindings(Bindings0, Bindings1),
 %    write('first: '), pretty(Bindings1), nl,
     filter_result(Bindings1, Bindings2),
     append(Bindings2, ItemLookahead, Bindings3),
-    prune_bindings(Bindings3, GroundVars, Bindings4),
-    prune_lookahead(Bindings4, GroundVars, Lookahead),
-    write('first: '), pretty(Item-lookahead(Lookahead)), nl.
+    prune_bindings(Bindings3, Vars, Bindings4),
+    prune_lookahead(Bindings4, Vars, Lookahead).
+%    write('first: '), pretty(Item-lookahead(Lookahead)), nl.
 
 
 prune_bindings([], _, []).
@@ -474,6 +419,68 @@ interpret_goal(Goal, Clauses, Stack, Cin, Cout) :-
     ).
 
 % ------------------------------------------------
+%  Type analysis. Identify the type category of
+%  each variable for a program given a start goal.
+%  The analysis is monovariant and the aim is to
+%  identify which variables are related to the
+%  token stream and which are related to the
+%  parse tree.
+% ------------------------------------------------
+type_analyze(Clauses, Goal) :-
+    (Goal = (_ = _) ->
+     type_analyze_unification(Goal)
+    ; get_clauses_nocopy(Goal, Clauses, Match) ->
+      type_analyze_goal(Clauses, Goal, Match)
+    ; % External goal, skipped
+      true
+    ).
+
+type_analyze_unification(A = B) :-
+    ((var(A) ; var(B)) -> A = B
+     ; true).
+
+type_analyze_goal(Clauses, Goal, Match) :-
+    [Head :- _Body | _] = Match,
+    (Goal == Head -> true
+   ; unify_heads(Match, Goal),
+    type_analyze_match(Match, Clauses)
+    ).
+
+type_analyze_match([], _).
+type_analyze_match([_ :- Body | Match], Clauses) :-
+    commas_to_list(Body, Goals),
+    type_analyze_goals(Goals, Clauses),
+    type_analyze_match(Match, Clauses).
+
+type_analyze_goals([], _).
+type_analyze_goals([Goal | Goals], Clauses) :-
+    type_analyze(Clauses, Goal),
+    type_analyze_goals(Goals, Clauses).
+
+unify_heads([], _).
+unify_heads([Head :- _ | Clauses], Goal) :-
+    Head = Goal,
+    unify_heads(Clauses, Goal).
+
+type_env(Clauses, Types) :-
+    term_variables(Clauses, ClauseVars),
+    copy_term(Clauses, Analyzed),
+    term_variables(Analyzed, AnalyzedVars),
+    type_analyze(Analyzed, start(ps,ts,ts)),
+    zip_type_env(ClauseVars, AnalyzedVars, Types0),
+    simplify_types(Types0, Types).
+
+zip_type_env([], [], []).
+zip_type_env([V|Vs], [A|As], [V=A | Types]) :-
+    zip_type_env(Vs,As, Types).
+
+simplify_types([], []).
+simplify_types([V=[_|ts] | Types0], [V = ts | Types1]) :-
+    !, simplify_types(Types0, Types1).
+simplify_types([Type | Types0], [Type | Types1]) :-
+    simplify_types(Types0, Types1).
+
+% ------------------------------------------------
 %  simplify(+Prog,-Result)
 %   Remove true from conjunctions
 %   Remove false from disjunctions
@@ -535,6 +542,39 @@ get_clauses0([(Head :- Body) | Clauses], Goal, [MatchGoal|Match]) :-
 get_clauses0([_Clause|Clauses], Goal, Match) :-
     get_clauses0(Clauses, Goal, Match).
 
+
+get_clauses_with_types(Goal, Env, Match, Types) :-
+    Env = env(_, Clauses, _, _),
+    get_clauses_with_types0(Clauses, Env, Goal, Match, Types),
+    Match = [_|_].
+
+get_clauses_with_types0([], _Env, _Goal, [], []).
+get_clauses_with_types0([(Head :- Body) | Clauses],
+			Env, Goal, [MatchGoal|Match], Types) :-
+    \+ Head \= Goal, !,
+    term_variables((Head:-Body), ClauseVars),
+    lookup_type_env_vars(ClauseVars, Env, Types0),
+    copy_term((Head:-Body)-Types0, MatchGoal-Types1),
+    get_clauses_with_types0(Clauses, Env, Goal, Match, Types2),
+    append(Types1, Types2, Types).
+
+get_clauses_with_types0([_Clause|Clauses], Env, Goal, Match, Types) :-
+    get_clauses_with_types0(Clauses, Env, Goal, Match, Types).
+
+lookup_type_env_vars([], _, []).
+lookup_type_env_vars([V|Vs], Env, [V=T | Types]) :-
+    lookup_type_env_var(V, Env, T),
+    lookup_type_env_vars(Vs, Env, Types).
+
+lookup_type_env_var(V, Env, T) :-
+    Env = env(_,_,Types,_),
+    lookup_type_env_var1(Types, V, T).
+
+lookup_type_env_var1([(V=T) | _], V1, T) :-
+    V == V1, !.
+lookup_type_env_var1([_| Types], V1, T) :-
+    lookup_type_env_var1(Types, V1, T).
+    
 
 get_clauses_nocopy(Goal, Clauses, Match) :-
     get_clauses_nocopy0(Clauses, Goal, Match),
