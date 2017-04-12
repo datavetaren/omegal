@@ -1,13 +1,11 @@
 main :-
     (retract(mycount(_)) -> true ; true),
     assert(mycount(1)),
-    init_env(Env, 'expr.pl'),
-    Env = env([InitItem|_], Clauses, Types, _Focus),
-    type_env(Clauses, Types),
-%    pretty(Types), nl,
-    item_closure(InitItem, Env, Closure),
-    pretty_program(Closure),
-    nl.
+    read_grammar('expr.pl', Env, InitItem),
+    InitState = state(1, [InitItem], []),
+    StatesIn = [InitState],
+    build_states(InitState, Env, StatesIn, StatesOut),
+    print_states(StatesOut).
 
 
 main2 :-
@@ -22,13 +20,165 @@ main2 :-
     pretty(Goals), nl.
 
 % ------------------------------------------------------
-%  Construct LALR(1) state machine
+%  read_grammar(+File, -Env, -InitItem)
 %
-%  State
-%  state(Number,Seen,Follow,Lookahead)
-%
+read_grammar(File, Env, InitItem) :-
+    init_env(Env, File),
+    Env = env([InitItem|_], Clauses, Types, _Focus),
+    type_env(Clauses, Types).
 
 
+% ------------------------------------------------------
+% build_states(State, StatesIn, StatesOut)
+%
+build_states(State, Env, StatesIn, StatesOut) :-
+    State = state(Label,KernelItems,_Actions),
+    % write('State '), write(Label), nl,
+    % print_state(State),
+    (Label > 100 -> xxx ; true),
+    items_closure(KernelItems, Env, ItemClosure),
+    iterate_transitions(ItemClosure, State, StatesIn, StatesOut0, NewStates),
+    build_states_list(NewStates, Env, StatesOut0, StatesOut).
+
+build_states_list([], _, States, States).
+build_states_list([State | States], Env, StatesIn, StatesOut) :-
+    build_states(State, Env, StatesIn, StatesOut0),
+    build_states_list(States, Env, StatesOut0, StatesOut).
+
+% ------------------------------------------------------
+%  iterate_transitions(+ItemClosure, +FromState, +StatesIn, -StatesOut, -NewStates)
+%   Given an item closure and a from state, iterate through the
+%   possible transitions and create new states + actions.
+%
+
+iterate_transitions([], _FromState, States, States, []) :- !.
+iterate_transitions(ItemClosure, state(FromLabel,FromKernelItems,FromActions),
+		    StatesIn, StatesOut, NewStates) :-
+    select_transition(ItemClosure, Next, NewItems, RestItems),
+    (NewItems = [] -> StatesOut = StatesIn, NewStates = [] 
+     ;
+     (state_find(StatesIn, NewItems, state(ToLabel, _ToKernelItems, _ToActions))
+      -> append([shift(Next,ToLabel)], FromActions, NewFromActions),
+      state_replace(StatesIn, state(FromLabel, FromKernelItems, NewFromActions),
+		    StatesOut0), NewStates0 = []
+      ; length(StatesIn, N),
+      N1 is N + 1,
+      NewState = state(N1, NewItems, []),
+      append([shift(Next,N1)], FromActions, NewFromActions),
+      state_replace(StatesIn, state(FromLabel, FromKernelItems, NewFromActions),
+		    StatesOut1),
+      NewStates0 = [NewState],
+      append(StatesOut1, NewStates0, StatesOut0)
+     ),
+     iterate_transitions(RestItems, state(FromLabel,FromKernelItems,FromActions), StatesOut0, StatesOut, NewStates1),
+     append(NewStates0, NewStates1, NewStates)
+     ).
+
+% ------------------------------------------------------
+%  select_transition(+ItemClosure, -Next, -NewItems, -RestItems)
+%
+%  Look at the next "token" of the item closure set
+%  to determine the new kernel items. Also return the
+%  rest of items.
+%
+
+select_transition([Item|ItemClosure], Next, NewItems, RestItems) :-
+    Item = item(_Head, _Seen, [Next|_Follow], _Vars, _Lookahead),
+    !,
+    select_transition1([Item|ItemClosure], Next, NewItems0, RestItems),
+    sort(NewItems0, NewItems).
+select_transition([Item|ItemClosure], Next, NewItems, [Item|RestItems]) :-
+    !, select_transition(ItemClosure, Next, NewItems, RestItems), !.
+select_transition([], _, [], []).
+
+select_transition1([], _, [], []).
+select_transition1([Item|ItemClosure], Next, NewItems, RestItems) :-
+    Item = item(Head, Seen, [Next|NewFollow], Vars, Lookahead), !,
+    append(Seen, [Next], NewSeen),
+    NewItems = [item(Head, NewSeen, NewFollow, Vars, Lookahead) | NewItems0],
+    select_transition1(ItemClosure, Next, NewItems0, RestItems).
+select_transition1([Item|ItemClosure], Next, NewItems, [Item|RestItems]) :-
+    select_transition1(ItemClosure, Next, NewItems, RestItems).
+
+% ------------------------------------------------------
+%  state_find(+States, +SearchKernelItems, -FoundLabel)
+%  True if there is a state for SearchKernelItems. The
+%  state label is returned in FoundLabel.
+%
+
+state_find([State | States],SearchKernelItems,FoundState) :-
+    State = state(_Label, KernelItems, _Actions),
+    (structurally_eq(KernelItems, SearchKernelItems) ->
+     FoundState = State
+   ; state_find(States,SearchKernelItems,FoundState)
+    ).
+
+% ------------------------------------------------------
+%  state_get(+States, +Label, -FoundState)
+%  Search through states with the specified label.
+%  Return FoundState if found.
+%
+state_get([state(Label,KernelItems,Actions)|_], Label, state(Label,KernelItems,Actions)) :- !.
+state_get([_ | States], Label, Found) :-
+	   state_get(States, Label, Found).
+
+
+% ------------------------------------------------------
+%  state_replace(+States, +State, -NewStates)
+%
+
+state_replace([state(Label,_KernelItems,_Actions) | States],
+	      state(Label,NewKernelItems,NewActions),
+	      NewStates) :-
+	       !, NewStates = [state(Label,NewKernelItems,NewActions)|States].
+state_replace([State | States], ReplaceState, [State | NewStates]) :-
+	      state_replace(States, ReplaceState, NewStates).
+
+
+% ------------------------------------------------------
+%  print_states(State)
+%
+print_states([]).
+print_states([State | States]) :-
+    copy_term(State, StateCopy),
+    bind_all_vars_with_count(StateCopy,0,'$disp',_),
+    print_state(StateCopy),
+    print_states(States).
+
+% ------------------------------------------------------
+%  print_state(State)
+%
+
+print_state(state(Label,KernelItems,Actions)) :-
+    write('--- State '), write(Label), write(' -------------------------'),nl,
+    print_kernel(KernelItems),
+    print_actions(Actions),
+    nl.
+
+print_actions([]).
+print_actions([Action|Actions]) :-
+    print_action(Action),
+    print_actions(Actions).
+
+print_action(shift(Next,Label)) :-
+    write('    shift on '), pretty(Next), write(' and goto '), write(Label),nl.
+
+
+print_kernel([]).
+print_kernel([Item | Items]) :-
+    print_item(Item), nl,
+    print_kernel(Items).
+
+print_item(item(Head, Seen, Follow, _Vars, Lookahead)) :-
+    append(Follow, [lookahead(Lookahead)], Goals1),
+    append(Seen, ['(*)' | Goals1], Goals),
+    list_to_commas(Goals, Body),
+    pretty(Head :- Body), !.
+
+% ------------------------------------------------------
+%  init_env(?Env, +GrammarFile)
+%  Setup Env by loading it with clauses from GrammarFile.
+%
 
 init_env(Env, GrammarFile) :-
     read_clauses(GrammarFile, Clauses),
@@ -40,8 +190,12 @@ init_env(Env, GrammarFile) :-
 
     Env = env([InitItem],Clauses,_,ts).
 
-item_closure(Item, Env, Closure) :-
-    item_closure(Item, Env, [], Closure0),
+% ------------------------------------------------------
+%  item_closure(+Item, +Env, -Closure)
+%
+
+items_closure(Items, Env, Closure) :-
+    item_closure_list(Items, Env, [], Closure0),
     compact_closure(Closure0, Closure).
 
 compact_closure([], []).
@@ -60,11 +214,11 @@ compact_closure([Item|Items], Compact) :-
      compact_closure(Items, Compact0)
      ).
 
-     
+
 item_closure(Item, Env, ItemsIn, ItemsOut) :-
 %    write('Closure: '), pretty(Item), nl,
     mycount(Cnt),
-    (Cnt >= 50 -> xxx ; true),
+%    (Cnt >= 50 -> xxx ; true),
     retract(mycount(Cnt)),
     Cnt1 is Cnt + 1,
     assert(mycount(Cnt1)),
@@ -680,6 +834,7 @@ pretty(Term) :- current_output(S), pretty(Term, S).
 
 pretty(Term, S) :- pretty(Term, Term1, S), write(S, Term1).
 pretty(Term, Term1, S) :- copy_term(Term, Term0), pretty1(Term0, [], _, Term1, S).
+
 pretty1(V, EnvIn, EnvOut, Found, _) :- 
     var(V), !,
     length(EnvIn,N),
@@ -698,7 +853,15 @@ pretty1_list([X|Xs], EnvIn, EnvOut, [Y|Ys], S) :-
     pretty1(X, EnvIn, EnvOut1, Y, S),
     pretty1_list(Xs, EnvOut1, EnvOut, Ys, S).
 
-pretty1_leaf(Term, Env, Env, Term, _).
+pretty1_leaf(Term, Env, Env, Term1, _) :-
+    (atom(Term) ->
+     atom_codes(Term, Codes),
+     (Codes = [36, 100, 105, 115,112 | R] ->
+       number_codes(N, R),
+       get_name(N, Name),
+       Term1 = Name
+       ; Term1 = Term
+      ) ; Term1 = Term).
 
 get_name(0,'A') :- !.
 get_name(N,Name) :-
