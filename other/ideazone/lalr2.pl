@@ -35,8 +35,9 @@ build_states(State, Env, StatesIn, StatesOut) :-
     State = state(Label,KernelItems,_Actions),
     % write('State '), write(Label), nl,
     % print_state(State),
-    (Label > 100 -> xxx ; true),
+    (Label > 500 -> xxx ; true),
     items_closure(KernelItems, Env, ItemClosure),
+    (Label = 1 -> pretty_program(ItemClosure), nl ; true),
     iterate_transitions(ItemClosure, State, StatesIn, StatesOut0, NewStates),
     build_states_list(NewStates, Env, StatesOut0, StatesOut).
 
@@ -58,19 +59,19 @@ iterate_transitions(ItemClosure, state(FromLabel,FromKernelItems,FromActions),
     (NewItems = [] -> StatesOut = StatesIn, NewStates = [] 
      ;
      (state_find(StatesIn, NewItems, state(ToLabel, _ToKernelItems, _ToActions))
-      -> append([shift(Next,ToLabel)], FromActions, NewFromActions),
+      -> append(FromActions, [shift(Next,ToLabel)], NewFromActions),
       state_replace(StatesIn, state(FromLabel, FromKernelItems, NewFromActions),
 		    StatesOut0), NewStates0 = []
       ; length(StatesIn, N),
       N1 is N + 1,
       NewState = state(N1, NewItems, []),
-      append([shift(Next,N1)], FromActions, NewFromActions),
+      append(FromActions, [shift(Next,N1)], NewFromActions),
       state_replace(StatesIn, state(FromLabel, FromKernelItems, NewFromActions),
 		    StatesOut1),
       NewStates0 = [NewState],
       append(StatesOut1, NewStates0, StatesOut0)
      ),
-     iterate_transitions(RestItems, state(FromLabel,FromKernelItems,FromActions), StatesOut0, StatesOut, NewStates1),
+     iterate_transitions(RestItems, state(FromLabel,FromKernelItems,NewFromActions), StatesOut0, StatesOut, NewStates1),
      append(NewStates0, NewStates1, NewStates)
      ).
 
@@ -138,12 +139,16 @@ state_replace([State | States], ReplaceState, [State | NewStates]) :-
 % ------------------------------------------------------
 %  print_states(State)
 %
-print_states([]).
-print_states([State | States]) :-
+print_states(States) :- print_states(States, 1000).
+
+print_states([], _).
+print_states([State | States], Lim) :-
+    Lim > 0,
     copy_term(State, StateCopy),
     bind_all_vars_with_count(StateCopy,0,'$disp',_),
     print_state(StateCopy),
-    print_states(States).
+    Lim1 is Lim - 1,
+    print_states(States, Lim1).
 
 % ------------------------------------------------------
 %  print_state(State)
@@ -208,7 +213,8 @@ compact_closure([Item|Items], Compact) :-
      append(Vars,Vars1,MergedVars1),
      sort(MergedVars1, MergedVars),
      append(Lookahead,Lookahead1,MergedLookaheads1),
-     prune_lookahead(MergedLookaheads1, MergedVars, MergedLookaheads),
+     prune_lookahead(MergedLookaheads1, MergedVars, MergedLookaheads2),
+     sort(MergedLookaheads2, MergedLookaheads),
      compact_closure([MergedItem|Rest], Compact)
    ; Compact = [Item | Compact0],
      compact_closure(Items, Compact0)
@@ -253,6 +259,20 @@ item_closure_add([Item|Items], Env, ItemsIn, NewItems) :-
     ).
 
 itemize_clauses([], _, _, _, _, []).
+%itemize_clauses([Head :- Body | Clauses], Types, Focus, First, Lookahead, [Item|Items]) :-
+%    commas_to_list(Body, Goals),
+%    copy_term(First-Lookahead, CopyFirst-CopyLookahead),
+%    First = Head,
+%    term_variables(First-Body, AllVars),
+%    find_focus_vars(AllVars, Types, Focus, FocusVars),
+%    sort(FocusVars, FocusVars1),
+%    write('prune '), pretty(Lookahead-AllVars1), nl,
+%    prune_bindings(Lookahead, FocusVars1, NewLookahead1),
+%    sort(NewLookahead1, NewLookahead),
+%    Item = item(Head, [], Goals, FocusVars1, NewLookahead),
+%    itemize_clauses(Clauses, Types, Focus, First, Lookahead, Items).
+
+
 itemize_clauses([Head :- Body | Clauses], Types, Focus, First, Lookahead, [Item|Items]) :-
     commas_to_list(Body, Goals),
     copy_term(First-Lookahead, CopyFirst-CopyLookahead),
@@ -264,6 +284,7 @@ itemize_clauses([Head :- Body | Clauses], Types, Focus, First, Lookahead, [Item|
     prune_bindings(CopyLookahead, FocusVars1, NewLookahead),
     Item = item(Head, [], Goals, FocusVars1, NewLookahead),
     itemize_clauses(Clauses, Types, Focus, First, Lookahead, Items).
+
 
 var_has_type([V1=T1|Types],V,T) :-
     (V == V1 -> T = T1
