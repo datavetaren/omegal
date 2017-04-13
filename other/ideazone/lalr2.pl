@@ -2,10 +2,10 @@ main :-
     (retract(mycount(_)) -> true ; true),
     assert(mycount(1)),
     read_grammar('expr.pl', Env, InitItem),
-    InitState = state(1, [InitItem], []),
+    InitState = state(1, [InitItem], [], []),
     StatesIn = [InitState],
     build_states(InitState, Env, StatesIn, StatesOut),
-    print_states(StatesOut).
+    print_states(StatesOut, 10).
 
 
 main2 :-
@@ -32,14 +32,16 @@ read_grammar(File, Env, InitItem) :-
 % build_states(State, StatesIn, StatesOut)
 %
 build_states(State, Env, StatesIn, StatesOut) :-
-    State = state(Label,KernelItems,_Actions),
+    State = state(Label,KernelItems,_OtherItems,Actions),
     % write('State '), write(Label), nl,
     % print_state(State),
     (Label > 500 -> xxx ; true),
     items_closure(KernelItems, Env, ItemClosure),
-    (Label = 1 -> pretty_program(ItemClosure), nl ; true),
-    iterate_transitions(ItemClosure, State, StatesIn, StatesOut0, NewStates),
-    build_states_list(NewStates, Env, StatesOut0, StatesOut).
+    ClosedState = state(Label,KernelItems,ItemClosure,Actions),
+    state_replace(StatesIn, ClosedState, StatesOut0),
+    (Label = 1 -> print_states(StatesOut0) ; true),
+    iterate_transitions(ItemClosure, State, StatesOut0, StatesOut1, NewStates),
+    build_states_list(NewStates, Env, StatesOut1, StatesOut).
 
 build_states_list([], _, States, States).
 build_states_list([State | States], Env, StatesIn, StatesOut) :-
@@ -53,25 +55,26 @@ build_states_list([State | States], Env, StatesIn, StatesOut) :-
 %
 
 iterate_transitions([], _FromState, States, States, []) :- !.
-iterate_transitions(ItemClosure, state(FromLabel,FromKernelItems,FromActions),
+iterate_transitions(ItemClosure,
+		    state(FromLabel,FromKernelItems,FromOtherItems,FromActions),
 		    StatesIn, StatesOut, NewStates) :-
     select_transition(ItemClosure, Next, NewItems, RestItems),
     (NewItems = [] -> StatesOut = StatesIn, NewStates = [] 
      ;
-     (state_find(StatesIn, NewItems, state(ToLabel, _ToKernelItems, _ToActions))
+     (state_find(StatesIn, NewItems, state(ToLabel, _ToKernelItems, _OtherItems, _ToActions))
       -> append(FromActions, [shift(Next,ToLabel)], NewFromActions),
-      state_replace(StatesIn, state(FromLabel, FromKernelItems, NewFromActions),
+      state_replace(StatesIn, state(FromLabel, FromKernelItems, FromOtherItems, NewFromActions),
 		    StatesOut0), NewStates0 = []
       ; length(StatesIn, N),
       N1 is N + 1,
-      NewState = state(N1, NewItems, []),
+      NewState = state(N1, NewItems, [], []),
       append(FromActions, [shift(Next,N1)], NewFromActions),
-      state_replace(StatesIn, state(FromLabel, FromKernelItems, NewFromActions),
+      state_replace(StatesIn, state(FromLabel, FromKernelItems, FromOtherItems, NewFromActions),
 		    StatesOut1),
       NewStates0 = [NewState],
       append(StatesOut1, NewStates0, StatesOut0)
      ),
-     iterate_transitions(RestItems, state(FromLabel,FromKernelItems,NewFromActions), StatesOut0, StatesOut, NewStates1),
+     iterate_transitions(RestItems, state(FromLabel,FromKernelItems,FromOtherItems,NewFromActions), StatesOut0, StatesOut, NewStates1),
      append(NewStates0, NewStates1, NewStates)
      ).
 
@@ -108,7 +111,7 @@ select_transition1([Item|ItemClosure], Next, NewItems, [Item|RestItems]) :-
 %
 
 state_find([State | States],SearchKernelItems,FoundState) :-
-    State = state(_Label, KernelItems, _Actions),
+    State = state(_Label, KernelItems, _OtherItems, _Actions),
     (structurally_eq(KernelItems, SearchKernelItems) ->
      FoundState = State
    ; state_find(States,SearchKernelItems,FoundState)
@@ -119,7 +122,7 @@ state_find([State | States],SearchKernelItems,FoundState) :-
 %  Search through states with the specified label.
 %  Return FoundState if found.
 %
-state_get([state(Label,KernelItems,Actions)|_], Label, state(Label,KernelItems,Actions)) :- !.
+state_get([state(Label,KernelItems,OtherItems,Actions)|_], Label, state(Label,KernelItems,OtherItems,Actions)) :- !.
 state_get([_ | States], Label, Found) :-
 	   state_get(States, Label, Found).
 
@@ -128,12 +131,14 @@ state_get([_ | States], Label, Found) :-
 %  state_replace(+States, +State, -NewStates)
 %
 
-state_replace([state(Label,_KernelItems,_Actions) | States],
-	      state(Label,NewKernelItems,NewActions),
+state_replace([state(Label,_KernelItems,_OtherItems,_Actions) | States],
+	      state(Label,NewKernelItems,NewOtherItems,NewActions),
 	      NewStates) :-
-	       !, NewStates = [state(Label,NewKernelItems,NewActions)|States].
+    !,
+    NewStates = [state(Label,NewKernelItems,NewOtherItems,NewActions)|States].
 state_replace([State | States], ReplaceState, [State | NewStates]) :-
 	      state_replace(States, ReplaceState, NewStates).
+state_replace([], ReplaceState, [ReplaceState]).
 
 
 % ------------------------------------------------------
@@ -154,9 +159,12 @@ print_states([State | States], Lim) :-
 %  print_state(State)
 %
 
-print_state(state(Label,KernelItems,Actions)) :-
+print_state(state(Label,KernelItems,OtherItems,Actions)) :-
     write('--- State '), write(Label), write(' -------------------------'),nl,
-    print_kernel(KernelItems),
+    print_items(KernelItems),
+    write('---other items---'), nl,
+    print_items(OtherItems),
+    write('---other items done---'), nl,
     print_actions(Actions),
     nl.
 
@@ -169,10 +177,10 @@ print_action(shift(Next,Label)) :-
     write('    shift on '), pretty(Next), write(' and goto '), write(Label),nl.
 
 
-print_kernel([]).
-print_kernel([Item | Items]) :-
+print_items([]).
+print_items([Item | Items]) :-
     print_item(Item), nl,
-    print_kernel(Items).
+    print_items(Items).
 
 print_item(item(Head, Seen, Follow, _Vars, Lookahead)) :-
     append(Follow, [lookahead(Lookahead)], Goals1),
@@ -234,7 +242,8 @@ item_closure(Item, Env, ItemsIn, ItemsOut) :-
      first(Item,Clauses,Lookahead),
 %     write('Lookahead: '), pretty(Item-Lookahead), nl,
      (get_clauses_with_types(First, Env, Match, Types) ->
-      itemize_clauses(Match, Types, Focus, First, Lookahead, Items),
+      remove_recursive_matches(Match, ItemsIn, Match1),
+      itemize_clauses(Match1, Types, Focus, First, Lookahead, Items),
       item_closure_add(Items, Env, ItemsIn, NewItems)
     ; NewItems = []
      ),
@@ -244,6 +253,9 @@ item_closure(Item, Env, ItemsIn, ItemsOut) :-
     ),
     item_closure_add([Item], Env, ItemsOut0, NewItems0),
     append(NewItems0, ItemsOut0, ItemsOut).
+
+remove_recursive_matches(Match, ItemsIn, Match1) :-
+    Match1 = Match.
 
 item_closure_list([], _, Items, Items).
 item_closure_list([Item|Items], Env, ItemsIn, ItemsOut) :-
@@ -259,31 +271,31 @@ item_closure_add([Item|Items], Env, ItemsIn, NewItems) :-
     ).
 
 itemize_clauses([], _, _, _, _, []).
+itemize_clauses([Head :- Body | Clauses], Types, Focus, First, Lookahead,
+		[Item|Items]) :-
+    commas_to_list(Body, Goals),
+    First = Head,
+    term_variables(First-Body, AllVars),
+    find_focus_vars(AllVars, Types, Focus, FocusVars),
+    sort(FocusVars, FocusVars1),
+%    write('prune '), pretty(Lookahead-AllVars1), nl,
+    prune_bindings(Lookahead, FocusVars1, NewLookahead1),
+    sort(NewLookahead1, NewLookahead),
+    Item = item(Head, [], Goals, FocusVars1, NewLookahead),
+    itemize_clauses(Clauses, Types, Focus, First, Lookahead, Items).
+
+
 %itemize_clauses([Head :- Body | Clauses], Types, Focus, First, Lookahead, [Item|Items]) :-
 %    commas_to_list(Body, Goals),
 %    copy_term(First-Lookahead, CopyFirst-CopyLookahead),
-%    First = Head,
-%    term_variables(First-Body, AllVars),
+%    CopyFirst = Head,
+%    term_variables(CopyFirst-Body, AllVars),
 %    find_focus_vars(AllVars, Types, Focus, FocusVars),
 %    sort(FocusVars, FocusVars1),
-%    write('prune '), pretty(Lookahead-AllVars1), nl,
-%    prune_bindings(Lookahead, FocusVars1, NewLookahead1),
-%    sort(NewLookahead1, NewLookahead),
+%%    write('prune '), pretty(CopyLookahead-AllVars1), nl,
+%    prune_bindings(CopyLookahead, FocusVars1, NewLookahead),
 %    Item = item(Head, [], Goals, FocusVars1, NewLookahead),
 %    itemize_clauses(Clauses, Types, Focus, First, Lookahead, Items).
-
-
-itemize_clauses([Head :- Body | Clauses], Types, Focus, First, Lookahead, [Item|Items]) :-
-    commas_to_list(Body, Goals),
-    copy_term(First-Lookahead, CopyFirst-CopyLookahead),
-    CopyFirst = Head,
-    term_variables(CopyFirst-Body, AllVars),
-    find_focus_vars(AllVars, Types, Focus, FocusVars),
-    sort(FocusVars, FocusVars1),
-%    write('prune '), pretty(CopyLookahead-AllVars1), nl,
-    prune_bindings(CopyLookahead, FocusVars1, NewLookahead),
-    Item = item(Head, [], Goals, FocusVars1, NewLookahead),
-    itemize_clauses(Clauses, Types, Focus, First, Lookahead, Items).
 
 
 var_has_type([V1=T1|Types],V,T) :-
