@@ -39,8 +39,8 @@ build_states(State, Env, StatesIn, StatesOut) :-
     items_closure(KernelItems, Env, ItemClosure),
     ClosedState = state(Label,KernelItems,ItemClosure,Actions),
     state_replace(StatesIn, ClosedState, StatesOut0),
-    (Label = 1 -> print_states(StatesOut0) ; true),
-    iterate_transitions(ItemClosure, State, StatesOut0, StatesOut1, NewStates),
+%    (Label < 3 -> write('hejsan-----'), nl, print_states(StatesOut0), write('klart-----'), nl ; true),
+    iterate_transitions(ItemClosure, ClosedState, StatesOut0, StatesOut1, NewStates),
     build_states_list(NewStates, Env, StatesOut1, StatesOut).
 
 build_states_list([], _, States, States).
@@ -61,7 +61,7 @@ iterate_transitions(ItemClosure,
     select_transition(ItemClosure, Next, NewItems, RestItems),
     (NewItems = [] -> StatesOut = StatesIn, NewStates = [] 
      ;
-     (state_find(StatesIn, NewItems, state(ToLabel, _ToKernelItems, _OtherItems, _ToActions))
+     (state_find(StatesIn, NewItems, state(ToLabel, _ToKernelItems, _ToOtherItems, _ToActions))
       -> append(FromActions, [shift(Next,ToLabel)], NewFromActions),
       state_replace(StatesIn, state(FromLabel, FromKernelItems, FromOtherItems, NewFromActions),
 		    StatesOut0), NewStates0 = []
@@ -162,9 +162,9 @@ print_states([State | States], Lim) :-
 print_state(state(Label,KernelItems,OtherItems,Actions)) :-
     write('--- State '), write(Label), write(' -------------------------'),nl,
     print_items(KernelItems),
-    write('---other items---'), nl,
+%    write('---other items---'), nl,
     print_items(OtherItems),
-    write('---other items done---'), nl,
+%    write('---other items done---'), nl,
     print_actions(Actions),
     nl.
 
@@ -254,8 +254,19 @@ item_closure(Item, Env, ItemsIn, ItemsOut) :-
     item_closure_add([Item], Env, ItemsOut0, NewItems0),
     append(NewItems0, ItemsOut0, ItemsOut).
 
-remove_recursive_matches(Match, ItemsIn, Match1) :-
-    Match1 = Match.
+has_matching_item([item(Head, _Seen, Goals, _Vars, _LookaHead) | _],
+		  Head :- Body) :-
+    commas_to_list(Body, Goals), !.
+has_matching_item([_ | Items], Clause) :-
+    has_matching_item(Items, Clause).
+
+remove_recursive_matches([], _, []).
+remove_recursive_matches([Match | Matches], ItemsIn, Matches1) :-
+    (has_matching_item(ItemsIn, Match) ->
+     remove_recursive_matches(Matches, ItemsIn, Matches1)
+   ; Matches1 = [Match | Matches0],
+     remove_recursive_matches(Matches, ItemsIn, Matches0)
+     ).
 
 item_closure_list([], _, Items, Items).
 item_closure_list([Item|Items], Env, ItemsIn, ItemsOut) :-
