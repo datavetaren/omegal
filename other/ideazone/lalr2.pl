@@ -5,42 +5,80 @@ main :-
     InitState = state(1, [InitItem], [], []),
     StatesIn = [InitState],
     build_states(InitState, Env, StatesIn, StatesOut),
-    print_states(StatesOut, 10).
+    print_states(StatesOut, 100).
 
 
 main2 :-
-    init_env(Env, 'expr.pl'),
-    Env = env(_, Clauses),
-%    Goals = [
-%	X = ground, Y1 = ground, expr(E1,X,Y1), Y1 = ['+'|Y2], expr(E2,Y2,Y), E = E1+E2
-%    ],
-    Goals = start(_,ground,ground),
-    groundness_analysis(Clauses, Goals),
-    write('hej '),
-    pretty(Goals), nl.
+    read_grammar('expr.pl', Env, _InitItem),
+    InitItem = item(factor(A,B,C), [], [B = ['(' | U], expr(V,U,W), W = [')'|C], A=V], [], [B,C,U,W], []),
+    Env = env(_, Clauses, _, _),
+    first(InitItem, Clauses, Lookahead),
+    pretty(InitItem-Lookahead), nl.
 
 % ------------------------------------------------------
 %  read_grammar(+File, -Env, -InitItem)
 %
 read_grammar(File, Env, InitItem) :-
-    init_env(Env, File),
-    Env = env([InitItem|_], Clauses, Types, _Focus),
-    type_env(Clauses, Types).
+    init_env(Env1, File),
+    Env1 = env([InitItem|Items], Clauses, _, Focus),
+    type_env(Clauses, Types),
+    partition_clauses(Clauses, Types, Focus, Clauses1),
+    pretty_program(Clauses1), nl,
+    Env = env([InitItem|Items], Clauses1, Types, Focus).
 
+% ------------------------------------------------------
+%  partition_clauses(Clauses, Types, Focus, NewClauses)
+%
+%  Iterate over clauses and scan their bodies.
+%  Partition the body into goals which does not
+%  actively "drive" the parser. These become pure
+%  actions.
+%
+
+partition_clauses([], _, _, []).
+partition_clauses([(Head :- Body) | Clauses], Types, Focus, [NewClause | NewClauses]) :-
+    commas_to_list(Body, Goals),
+    partition_goals(Goals, Types, Focus, FilteredGoals, Actions),
+    NewClause = (Head :- (FilteredGoals, Actions)),
+    partition_clauses(Clauses, Types, Focus, NewClauses).
+
+partition_goals([], _, _, [], []).
+partition_goals([Goal | Goals], Types, Focus, FilteredGoals, Actions) :-
+    (goal_is_action(Goal, Types, Focus)
+       -> Actions = [Goal | Actions1], FilteredGoals1 = FilteredGoals
+        ; Actions = Actions1, FilteredGoals = [Goal | FilteredGoals1]
+     ), partition_goals(Goals, Types, Focus, FilteredGoals1, Actions1).
+     
+goal_is_action(A = B, Types, Focus) :-
+    \+ var_has_type(Types, A, Focus),
+    \+ var_has_type(Types, B, Focus), !.
+goal_is_action(Goal, Types, Focus) :-
+    term_variables(Goal, Vars),
+    no_focus_vars(Vars, Types, Focus).
+
+no_focus_vars([], _, _).
+no_focus_vars([V|Vars], Types, Focus) :-
+    \+ var_has_type(Types, V, Focus),
+    no_focus_vars(Vars, Types, Focus).
 
 % ------------------------------------------------------
 % build_states(State, StatesIn, StatesOut)
 %
 build_states(State, Env, StatesIn, StatesOut) :-
-    State = state(Label,KernelItems,_OtherItems,Actions),
+    State = state(Label,KernelItems,_ClosureItems,Actions),
     % write('State '), write(Label), nl,
     % print_state(State),
     (Label > 500 -> xxx ; true),
     items_closure(KernelItems, Env, ItemClosure),
+%    (Label == 1 -> write('ClosedState.'), nl, pretty(ItemClosure), nl ; true),
     ClosedState = state(Label,KernelItems,ItemClosure,Actions),
     state_replace(StatesIn, ClosedState, StatesOut0),
+%    write('---- state is -----'), nl,
+%    print_states(StatesOut0, 1), nl,
 %    (Label < 3 -> write('hejsan-----'), nl, print_states(StatesOut0), write('klart-----'), nl ; true),
     iterate_transitions(ItemClosure, ClosedState, StatesOut0, StatesOut1, NewStates),
+%    write('---- state is after iterate -----'), nl,
+%    print_states(StatesOut0, 1), nl,
     build_states_list(NewStates, Env, StatesOut1, StatesOut).
 
 build_states_list([], _, States, States).
@@ -56,27 +94,41 @@ build_states_list([State | States], Env, StatesIn, StatesOut) :-
 
 iterate_transitions([], _FromState, States, States, []) :- !.
 iterate_transitions(ItemClosure,
-		    state(FromLabel,FromKernelItems,FromOtherItems,FromActions),
+		    state(FromLabel,FromKernelItems,FromClosureItems,FromActions),
 		    StatesIn, StatesOut, NewStates) :-
     select_transition(ItemClosure, Next, NewItems, RestItems),
+    nextify_token(Next, Nexted),
     (NewItems = [] -> StatesOut = StatesIn, NewStates = [] 
      ;
-     (state_find(StatesIn, NewItems, state(ToLabel, _ToKernelItems, _ToOtherItems, _ToActions))
-      -> append(FromActions, [shift(Next,ToLabel)], NewFromActions),
-      state_replace(StatesIn, state(FromLabel, FromKernelItems, FromOtherItems, NewFromActions),
+     (state_find(StatesIn, NewItems, state(ToLabel, _ToKernelItems, _ToClosureItems, _ToActions))
+      -> append(FromActions, [shift(Nexted,ToLabel)], NewFromActions),
+      state_replace(StatesIn, state(FromLabel, FromKernelItems, FromClosureItems, NewFromActions),
 		    StatesOut0), NewStates0 = []
       ; length(StatesIn, N),
       N1 is N + 1,
-      NewState = state(N1, NewItems, [], []),
-      append(FromActions, [shift(Next,N1)], NewFromActions),
-      state_replace(StatesIn, state(FromLabel, FromKernelItems, FromOtherItems, NewFromActions),
+      copy_term(NewItems, NewItemsCopy),
+      NewState = state(N1, NewItemsCopy, [], []),
+      append(FromActions, [shift(Nexted,N1)], NewFromActions),
+      state_replace(StatesIn, state(FromLabel, FromKernelItems, FromClosureItems, NewFromActions),
 		    StatesOut1),
       NewStates0 = [NewState],
       append(StatesOut1, NewStates0, StatesOut0)
      ),
-     iterate_transitions(RestItems, state(FromLabel,FromKernelItems,FromOtherItems,NewFromActions), StatesOut0, StatesOut, NewStates1),
+     iterate_transitions(RestItems, state(FromLabel,FromKernelItems,FromClosureItems,NewFromActions), StatesOut0, StatesOut, NewStates1),
      append(NewStates0, NewStates1, NewStates)
      ).
+
+% ------------------------------------------------------
+%  nextify_token(+Next, -Nexted)
+%
+%  If Next is a goal (e.g. foo(A,B,C) we use the Nexted
+%  token foo/3 to represent it, otherwise Nexted = Next.
+
+nextify_token(Next, Nexted) :-
+     (Next = (_ = _) -> Nexted = Next
+    ; functor(Next,F,N),
+      Nexted = F/N
+      ).
 
 % ------------------------------------------------------
 %  select_transition(+ItemClosure, -Next, -NewItems, -RestItems)
@@ -87,7 +139,7 @@ iterate_transitions(ItemClosure,
 %
 
 select_transition([Item|ItemClosure], Next, NewItems, RestItems) :-
-    Item = item(_Head, _Seen, [Next|_Follow], _Vars, _Lookahead),
+    Item = item(_Head, _Seen, [Next|_Follow], _Action, _Vars, _Lookahead),
     !,
     select_transition1([Item|ItemClosure], Next, NewItems0, RestItems),
     sort(NewItems0, NewItems).
@@ -97,9 +149,10 @@ select_transition([], _, [], []).
 
 select_transition1([], _, [], []).
 select_transition1([Item|ItemClosure], Next, NewItems, RestItems) :-
-    Item = item(Head, Seen, [Next|NewFollow], Vars, Lookahead), !,
-    append(Seen, [Next], NewSeen),
-    NewItems = [item(Head, NewSeen, NewFollow, Vars, Lookahead) | NewItems0],
+    Item = item(Head, Seen, [Next1|NewFollow], Action, Vars, Lookahead),
+    \+ Next \= Next1, !,
+    append(Seen, [Next1], NewSeen),
+    NewItems = [item(Head, NewSeen, NewFollow, Action, Vars, Lookahead) | NewItems0],
     select_transition1(ItemClosure, Next, NewItems0, RestItems).
 select_transition1([Item|ItemClosure], Next, NewItems, [Item|RestItems]) :-
     select_transition1(ItemClosure, Next, NewItems, RestItems).
@@ -111,7 +164,7 @@ select_transition1([Item|ItemClosure], Next, NewItems, [Item|RestItems]) :-
 %
 
 state_find([State | States],SearchKernelItems,FoundState) :-
-    State = state(_Label, KernelItems, _OtherItems, _Actions),
+    State = state(_Label, KernelItems, _ClosureItems, _Actions),
     (structurally_eq(KernelItems, SearchKernelItems) ->
      FoundState = State
    ; state_find(States,SearchKernelItems,FoundState)
@@ -122,7 +175,7 @@ state_find([State | States],SearchKernelItems,FoundState) :-
 %  Search through states with the specified label.
 %  Return FoundState if found.
 %
-state_get([state(Label,KernelItems,OtherItems,Actions)|_], Label, state(Label,KernelItems,OtherItems,Actions)) :- !.
+state_get([state(Label,KernelItems,ClosureItems,Actions)|_], Label, state(Label,KernelItems,ClosureItems,Actions)) :- !.
 state_get([_ | States], Label, Found) :-
 	   state_get(States, Label, Found).
 
@@ -131,11 +184,11 @@ state_get([_ | States], Label, Found) :-
 %  state_replace(+States, +State, -NewStates)
 %
 
-state_replace([state(Label,_KernelItems,_OtherItems,_Actions) | States],
-	      state(Label,NewKernelItems,NewOtherItems,NewActions),
+state_replace([state(Label,_KernelItems,_ClosureItems,_Actions) | States],
+	      state(Label,NewKernelItems,NewClosureItems,NewActions),
 	      NewStates) :-
     !,
-    NewStates = [state(Label,NewKernelItems,NewOtherItems,NewActions)|States].
+    NewStates = [state(Label,NewKernelItems,NewClosureItems,NewActions)|States].
 state_replace([State | States], ReplaceState, [State | NewStates]) :-
 	      state_replace(States, ReplaceState, NewStates).
 state_replace([], ReplaceState, [ReplaceState]).
@@ -159,14 +212,28 @@ print_states([State | States], Lim) :-
 %  print_state(State)
 %
 
-print_state(state(Label,KernelItems,OtherItems,Actions)) :-
+print_state(state(Label,_KernelItems,ClosureItems,Actions)) :-
     write('--- State '), write(Label), write(' -------------------------'),nl,
-    print_items(KernelItems),
-%    write('---other items---'), nl,
-    print_items(OtherItems),
-%    write('---other items done---'), nl,
+%    print_items(KernelItems),
+%    write('---closure items---'), nl,
+    predsort(item_pred, ClosureItems, SortedItems),
+    print_items(SortedItems),
+%    write('---closure items done---'), nl,
     print_actions(Actions),
     nl.
+
+%
+% This will put (most) kernel items on top
+%
+item_pred(Delta, Item1, Item2) :-
+      Item1 = item(_, Seen1, _, _, _, _),
+      Item2 = item(_, Seen2, _, _, _, _),
+      length(Seen1, N1),
+      length(Seen2, N2),
+      (N1 > N2 -> Delta = '<'
+     ; N1 < N2 -> Delta = '>'
+     ; compare(Delta, Item1, Item2)
+       ).
 
 print_actions([]).
 print_actions([Action|Actions]) :-
@@ -182,9 +249,11 @@ print_items([Item | Items]) :-
     print_item(Item), nl,
     print_items(Items).
 
-print_item(item(Head, Seen, Follow, _Vars, Lookahead)) :-
-    append(Follow, [lookahead(Lookahead)], Goals1),
-    append(Seen, ['(*)' | Goals1], Goals),
+print_item(item(Head, Seen, Follow, Action, _Vars, Lookahead)) :-
+    append(Seen, ['(*)'], Goals1),
+    append(Goals1, Follow, Goals2),
+    append(Goals2, ['(+)' | Action], Goals3),
+    append(Goals3, [lookahead(Lookahead)], Goals),
     list_to_commas(Goals, Body),
     pretty(Head :- Body), !.
 
@@ -195,12 +264,7 @@ print_item(item(Head, Seen, Follow, _Vars, Lookahead)) :-
 
 init_env(Env, GrammarFile) :-
     read_clauses(GrammarFile, Clauses),
-    InitItem = item('$start', [],[start(X,T,T1)],[T,T1],[]),
-
-%     InitItem = item(factor(F,X,Y), [X =['('|Y1]], [expr(E,Y1,Y2), Y2 = [')'|Y], F = E], [X,Y,Y1,Y2], []),
-%    InitItem = item(expr(E,X,Y), [],[expr(E1,X,Y1),Y1=['+'|Y2], expr(E2,Y2,Y), E=E1+E2],[X],[]),
-%    InitItem = item(expr(T,X,Y), [],[term(T,X,Y)],[X],[]),
-
+    InitItem = item('$start', [],[start(X,T,T1)],[],[T,T1],[T1=eof]),
     Env = env([InitItem],Clauses,_,ts).
 
 % ------------------------------------------------------
@@ -213,11 +277,11 @@ items_closure(Items, Env, Closure) :-
 
 compact_closure([], []).
 compact_closure([Item|Items], Compact) :-
-    Item = item(Head,Seen,Follow,Vars,Lookahead),
-    Search = item(Head,Seen,Follow,Vars1,Lookahead1),
+    Item = item(Head,Seen,Follow,Action,Vars,Lookahead),
+    Search = item(Head,Seen,Follow,Action,Vars1,Lookahead1),
     (select(Search, Items, Rest) ->
      % We found another matching item, so merge lookaheads
-     MergedItem = item(Head,Seen,Follow,MergedVars,MergedLookaheads),
+     MergedItem = item(Head,Seen,Follow,Action,MergedVars,MergedLookaheads),
      append(Vars,Vars1,MergedVars1),
      sort(MergedVars1, MergedVars),
      append(Lookahead,Lookahead1,MergedLookaheads1),
@@ -229,20 +293,28 @@ compact_closure([Item|Items], Compact) :-
      ).
 
 
+head_list([], []).
+head_list([item(Head,_,_,_,_,_)|Items], [Head|Heads]) :-
+    head_list(Items, Heads).
+
 item_closure(Item, Env, ItemsIn, ItemsOut) :-
-%    write('Closure: '), pretty(Item), nl,
+    Item = item(_,_,Follow,_,_,_),
+%    head_list(ItemsIn, Heads),
+%    write('Closure: '), pretty(Head), write(' '), pretty(Heads), nl,
     mycount(Cnt),
 %    (Cnt >= 50 -> xxx ; true),
     retract(mycount(Cnt)),
     Cnt1 is Cnt + 1,
     assert(mycount(Cnt1)),
     Env = env(_, Clauses, _, Focus),
-    Item = item(_,_,Follow,_,_),
+    Item = item(_,_,Follow,_,_,_),
     (Follow = [First|_] ->
      first(Item,Clauses,Lookahead),
 %     write('Lookahead: '), pretty(Item-Lookahead), nl,
      (get_clauses_with_types(First, Env, Match, Types) ->
       remove_recursive_matches(Match, ItemsIn, Match1),
+%      write('----- matching -----'), nl,
+%      pretty(Match1), nl,
       itemize_clauses(Match1, Types, Focus, First, Lookahead, Items),
       item_closure_add(Items, Env, ItemsIn, NewItems)
     ; NewItems = []
@@ -252,17 +324,20 @@ item_closure(Item, Env, ItemsIn, ItemsOut) :-
    ; ItemsOut0 = ItemsIn
     ),
     item_closure_add([Item], Env, ItemsOut0, NewItems0),
-    append(NewItems0, ItemsOut0, ItemsOut).
+    append(ItemsOut0, NewItems0, ItemsOut).
+%    write('item closure done: '), pretty(Head), nl,
+%    (Head == '$start' -> pretty(ItemsOut), nl ; true).
 
-has_matching_item([item(Head, _Seen, Goals, _Vars, _LookaHead) | _],
-		  Head :- Body) :-
-    commas_to_list(Body, Goals), !.
-has_matching_item([_ | Items], Clause) :-
-    has_matching_item(Items, Clause).
+has_matching_head([item(Head, _Seen, _Goals, _Action, _Vars, _LookaHead) | _],
+		  Head1 :- _Body) :-
+    \+ Head \= Head1.
+has_matching_head([_ | Items], Clause) :-
+    has_matching_head(Items, Clause).
 
 remove_recursive_matches([], _, []).
 remove_recursive_matches([Match | Matches], ItemsIn, Matches1) :-
-    (has_matching_item(ItemsIn, Match) ->
+    (has_matching_head(ItemsIn, Match) ->
+%     write('Remove recursive match '), pretty(Match), nl,
      remove_recursive_matches(Matches, ItemsIn, Matches1)
    ; Matches1 = [Match | Matches0],
      remove_recursive_matches(Matches, ItemsIn, Matches0)
@@ -282,17 +357,16 @@ item_closure_add([Item|Items], Env, ItemsIn, NewItems) :-
     ).
 
 itemize_clauses([], _, _, _, _, []).
-itemize_clauses([Head :- Body | Clauses], Types, Focus, First, Lookahead,
+itemize_clauses([Head :- (Goals,Actions) | Clauses], Types, Focus, First, Lookahead,
 		[Item|Items]) :-
-    commas_to_list(Body, Goals),
     First = Head,
-    term_variables(First-Body, AllVars),
+    term_variables(First-Goals, AllVars),
     find_focus_vars(AllVars, Types, Focus, FocusVars),
     sort(FocusVars, FocusVars1),
 %    write('prune '), pretty(Lookahead-AllVars1), nl,
     prune_bindings(Lookahead, FocusVars1, NewLookahead1),
     sort(NewLookahead1, NewLookahead),
-    Item = item(Head, [], Goals, FocusVars1, NewLookahead),
+    Item = item(Head, [], Goals, Actions, FocusVars1, NewLookahead),
     itemize_clauses(Clauses, Types, Focus, First, Lookahead, Items).
 
 
@@ -426,8 +500,8 @@ bind_all_vars_with_count_list([Term|Terms],CountIn,Tag,CountOut) :-
 %  the program.
 % -----------------------------------------------------
 first(Item,Clauses,Lookahead) :-
-    Item = item(Head,Seen,Follow,Vars,ItemLookahead),
-    term_variables(Head-Seen-Follow, AllVars),
+    Item = item(Head,Seen,Follow,Action,Vars,ItemLookahead),
+    term_variables(Head-Seen-Follow-Action, AllVars),
     subtract_vars(AllVars, Vars, ExtVars),
     append(ExtVars, [interpret_nr(Follow,Clauses,Constraints)], ExtList),
     list_to_ext(ExtList, Query),
@@ -609,8 +683,7 @@ interpret_goal(X = Y, _Clauses, _Stack, Constraints, Constraints) :-
     X = Y, !.
 interpret_goal(Goal, Clauses, Stack, Cin, Cout) :-
     (get_clauses(Goal, Clauses, Match) ->
-     member(Goal :- Body, Match),
-     commas_to_list(Body, Goals),
+     member((Goal :- (Goals,_Actions)), Match),
      interpret_goals(Goals, Clauses, [Goal|Stack], Cin, Cout)
      % Goal could not be found. Assume it is external.
    ; append(Cin, [Goal], Cout)
